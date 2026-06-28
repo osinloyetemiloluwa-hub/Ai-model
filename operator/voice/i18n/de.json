@@ -1,0 +1,16 @@
+{
+  "lang": {
+    "set_ok": "Sprache auf {name} ({code}) gesetzt. Antworten, Sprach-Zusammenfassungen, Welcome-Karten und Hörer-Blöcke laufen ab jetzt in dieser Sprache.",
+    "cleared": "Sprach-Einstellung gelöscht. Es wird wieder automatisch erkannt (Default: Englisch).",
+    "current": "Aktuelle Sprache: {name} ({code}).",
+    "current_unset": "Keine Sprache gesetzt. Standard: {name} ({code}).",
+    "unknown": "Unbekannter Sprachcode '{raw}'. Probier einen BCP-47-Code wie de, en, zh-Hans, ja, fr, es. /lang list zeigt die bekannten Codes.",
+    "usage": "Benutzung: /lang <code|list|clear|show>. Beispiele: /lang zh-Hans, /lang ja, /lang clear.",
+    "list_header": "Registrierte Sprachcodes (jeder andere gültige BCP-47-Code geht auch, er hat dann nur keinen Eigennamen):"
+  },
+  "consent": {
+    "ack_durable": "Zustimmung gespeichert. Deine Nachrichten in diesem Chat sind für den Assistenten sichtbar, bis du /consent off schreibst.",
+    "ack_off": "Zustimmung zurückgezogen. Deine Nachrichten landen ab jetzt nicht mehr beim Assistenten.",
+    "drop_first": "Hinweis: dieser Chat ist im Read-only-Modus. Deine Nachrichten erreichen den Assistenten nicht. /consent on schaltet das Mitlesen für dich frei."
+  }
+}

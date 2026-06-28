@@ -1,0 +1,116 @@
+name: Publish corvinOS to PyPI
+
+# Triggered when a GitHub Release is published (tag vX.Y.Z → PyPI).
+# Trusted-Publisher (OIDC) — no API token stored in GitHub secrets.
+#
+# PyPI setup (one-time, on pypi.org):
+#   Publishing → Trusted Publishers → Add publisher
+#     Owner:        CorvinLabs
+#     Repository:   CorvinOS
+#     Workflow:     .github/workflows/publish.yml
+#     Environment:  pypi
+#
+# TestPyPI setup (one-time, on test.pypi.org):
+#   Same as above, environment: testpypi
+#
+# GitHub setup (one-time):
+#   Repository → Settings → Environments → create "pypi" and "testpypi"
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  # ── 1. Build wheel + sdist ──────────────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so hatchling can read version from git tag
+
+      # ── React SPA (required by force-include in pyproject.toml) ────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: core/console/corvin_console/web-next/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: core/console/corvin_console/web-next
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Build React SPA
+        working-directory: core/console/corvin_console/web-next
+        run: npm run build
+
+      # ── Python wheel + sdist ────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        # hatchling is needed for the VendorOperatorHook (hatch_build.py)
+        run: pip install --upgrade build hatchling
+
+      - name: Build wheel and sdist
+        # pyproject.toml lives at repo root — do NOT cd into ops/launcher
+        run: python -m build
+
+      - name: Verify artifacts
+        run: |
+          ls -lh dist/
+          python -m zipfile -l dist/*.whl | grep -E "METADATA|corvin_console/web-next/dist/index.html" || true
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  # ── 2. Publish to TestPyPI (staging) ────────────────────────────────────────
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/corvinos
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  # ── 3. Publish to PyPI (production) ─────────────────────────────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/corvinos
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

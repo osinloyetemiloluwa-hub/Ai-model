@@ -1,0 +1,130 @@
+# Engine Model Registry — ADR-0119
+#
+# This file is the extensible template for per-engine model configuration.
+# It defines the available model choices for OS-turn and worker-turn per engine.
+# Adding a new engine: add an entry here; the console UI renders it automatically.
+#
+# Fields per engine:
+#   label                   — human-readable display name
+#   supports_os_turn        — engine can host the Corvin OS-turn (main conversation)
+#   supports_worker_turn    — engine can run as an ACS delegation worker
+#   supports_task_type_steering — engine uses the model field as a task-type hint
+#                                 (e.g. GitHub Copilot: shell/git/gh)
+#   os_models / worker_models — list of selectable model entries:
+#     id      — model identifier passed to the engine (empty string = engine default)
+#     label   — display label shown in the console
+#     default — true on the entry that is the registry default for that role
+#
+# Empty os_models / worker_models → no model selection for that role.
+# Hermes models are Ollama aliases; actual model IDs can be set as free-text.
+
+engines:
+  claude_code:
+    label: "Claude Code"
+    supports_os_turn: true
+    supports_worker_turn: true
+    supports_task_type_steering: false
+    os_models:
+      - id: ""
+        label: "Adaptive — Haiku ≤60K chars, Sonnet above (default)"
+        default: true
+      - id: "claude-haiku-4-5-20251001"
+        label: "Haiku 4.5 — fast, economical"
+      - id: "claude-sonnet-4-6"
+        label: "Sonnet 4.6 — balanced"
+      - id: "claude-opus-4-8"
+        label: "Opus 4.8 — max capability"
+      - id: "claude-fable-5"
+        label: "Fable 5 — creative reasoning"
+    worker_models:
+      - id: "claude-haiku-4-5-20251001"
+        label: "Haiku 4.5 — fast, economical"
+      - id: "claude-sonnet-4-6"
+        label: "Sonnet 4.6 — balanced"
+      - id: "claude-opus-4-8"
+        label: "Opus 4.8 — max capability (default)"
+        default: true
+      - id: "claude-fable-5"
+        label: "Fable 5 — creative reasoning"
+
+  opencode:
+    label: "OpenCode"
+    supports_os_turn: true
+    supports_worker_turn: true
+    supports_task_type_steering: false
+    os_models:
+      - id: ""
+        label: "Provider default"
+        default: true
+      - id: "anthropic/claude-sonnet-4-6"
+        label: "Claude Sonnet 4.6 (Anthropic)"
+      - id: "anthropic/claude-opus-4-8"
+        label: "Claude Opus 4.8 (Anthropic)"
+      - id: "ollama/qwen3:8b"
+        label: "Qwen3 8B (local Ollama)"
+      - id: "ollama/qwen3:14b"
+        label: "Qwen3 14B (local Ollama)"
+    worker_models:
+      - id: ""
+        label: "Provider default"
+        default: true
+      - id: "anthropic/claude-sonnet-4-6"
+        label: "Claude Sonnet 4.6 (Anthropic)"
+      - id: "anthropic/claude-haiku-4-5-20251001"
+        label: "Claude Haiku 4.5 (Anthropic)"
+      - id: "ollama/qwen3:8b"
+        label: "Qwen3 8B (local Ollama)"
+
+  hermes:
+    label: "Hermes (Ollama)"
+    supports_os_turn: true
+    supports_worker_turn: true
+    supports_task_type_steering: false
+    os_models:
+      - id: "hermes-balanced"
+        label: "hermes-balanced (default)"
+        default: true
+      - id: "hermes-fast"
+        label: "hermes-fast — small model, quick"
+      - id: "hermes-capable"
+        label: "hermes-capable — larger context"
+      - id: "hermes-large"
+        label: "hermes-large — maximum local"
+    worker_models:
+      - id: "hermes-balanced"
+        label: "hermes-balanced (default)"
+        default: true
+      - id: "hermes-fast"
+        label: "hermes-fast"
+      - id: "hermes-capable"
+        label: "hermes-capable"
+      - id: "hermes-large"
+        label: "hermes-large"
+
+  codex_cli:
+    label: "Codex CLI"
+    supports_os_turn: false
+    supports_worker_turn: true
+    supports_task_type_steering: false
+    os_models: []
+    worker_models:
+      - id: ""
+        label: "Codex default"
+        default: true
+
+  copilot:
+    label: "GitHub Copilot"
+    supports_os_turn: false
+    supports_worker_turn: true
+    supports_task_type_steering: true
+    os_models: []
+    worker_models:
+      - id: ""
+        label: "Auto — Copilot decides (default)"
+        default: true
+      - id: "shell"
+        label: "shell — terminal / shell tasks"
+      - id: "git"
+        label: "git — git operations"
+      - id: "gh"
+        label: "gh — GitHub CLI tasks"

@@ -1,0 +1,260 @@
+"""BYOK (Bring-Your-Own-Key) console endpoints — ADR-0047.
+
+Routes:
+  GET  /byok/pubkey                        — instance RSA public key PEM
+  POST /byok/secrets/{key_name}            — store encrypted secret (proxy to agent)
+  GET  /byok/secrets                       — list BYOK key metadata (no values)
+
+In hosted mode (CORVIN_HOSTED_MODE=true) these routes proxy to the
+Management API.  In self-hosted mode they speak directly to the local
+Instance Agent (CORVIN_AGENT_URL, default http://127.0.0.1:8766).
+
+Security invariants:
+  - ciphertext is NEVER decrypted by the console layer
+  - plaintext API key values are NEVER stored or logged here
+  - key_name is validated against ADR-0047 allow-list
+  - audit console.byok_updated emitted on every successful store
+"""
+from __future__ import annotations
+
+import json
+import os
+import ssl
+import sys
+import time
+from pathlib import Path
+from typing import Annotated, Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from pydantic import BaseModel, Field
+
+from .. import audit as console_audit
+from .. import auth as session_auth
+from ..deps import require_csrf, require_session
+
+router = APIRouter(prefix="/byok", tags=["console-byok"])
+
+_AGENT_URL_ENV = "CORVIN_AGENT_URL"
+_DEFAULT_AGENT_URL = "http://127.0.0.1:8766"
+_MGMT_API_URL_ENV = "CORVIN_MANAGEMENT_API_URL"
+
+_BYOK_TIMEOUT = 15.0
+
+_REPO = Path(__file__).resolve().parents[4]
+_AGENT_PATH = _REPO / "operator" / "agent"
+if str(_AGENT_PATH) not in sys.path:
+    sys.path.insert(0, str(str(_AGENT_PATH.parent)))
+
+
+def _agent_url() -> str:
+    return os.environ.get(_AGENT_URL_ENV, _DEFAULT_AGENT_URL).rstrip("/")
+
+
+def _is_hosted() -> bool:
+    return os.environ.get("CORVIN_HOSTED_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _agent_get(path: str, *, timeout: float = _BYOK_TIMEOUT) -> Any:
+    url = f"{_agent_url()}{path}"
+    req = Request(url, method="GET")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            body = resp.read()
+            if "json" in ct:
+                return json.loads(body)
+            return body.decode("utf-8")
+    except URLError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Instance Agent unreachable: {exc}",
+        )
+
+
+def _agent_post(path: str, payload: dict[str, Any], *, timeout: float = _BYOK_TIMEOUT) -> Any:
+    url = f"{_agent_url()}{path}"
+    data = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except URLError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Instance Agent unreachable: {exc}",
+        )
+
+
+# ── GET /byok/pubkey ─────────────────────────────────────────────────────
+
+@router.get("/pubkey")
+def get_pubkey(
+    rec: Annotated[session_auth.SessionRecord, Depends(require_session)],
+) -> dict[str, Any]:
+    """Return the instance RSA public key in PEM format.
+
+    In hosted mode: proxies to the Instance Agent.
+    In self-hosted mode: loads the keypair directly from disk so the
+    page works without a running Instance Agent process.
+    """
+    if _is_hosted():
+        pem_text = _agent_get("/pubkey")
+    else:
+        try:
+            from agent.keypair import generate_or_load_keypair, _agent_dir  # type: ignore
+            _, pub_pem = generate_or_load_keypair(_agent_dir(rec.tenant_id), tenant_id=rec.tenant_id)
+            pem_text = pub_pem.decode("utf-8")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"keypair unavailable: {exc}",
+            )
+    return {
+        "tenant_id": rec.tenant_id,
+        "pubkey_pem": pem_text,
+        "algorithm": "RSA-OAEP-SHA256",
+        "key_size": 2048,
+        "ts": time.time(),
+    }
+
+
+# ── POST /byok/secrets/{key_name} ────────────────────────────────────────
+
+class BYOKSecretRequest(BaseModel):
+    ciphertext: str = Field(..., description="RSA-OAEP-SHA256 ciphertext, base64-encoded; MUST be encrypted in-browser before sending")
+    algorithm: str = Field(default="RSA-OAEP-SHA256")
+    model_config = {"extra": "forbid"}
+
+
+@router.post("/secrets/{key_name}", status_code=200)
+def post_secret(
+    key_name: str,
+    body: BYOKSecretRequest,
+    rec: Annotated[session_auth.SessionRecord, Depends(require_csrf)],
+) -> dict[str, Any]:
+    """Forward an encrypted BYOK secret to the Instance Agent.
+
+    The ciphertext MUST have been encrypted in the browser with the
+    instance's RSA public key (RSA-OAEP-SHA256) before this endpoint
+    is called.  This route only forwards the ciphertext — it never
+    sees or stores the plaintext value.
+
+    Audit event: console.byok_updated { key_name, tenant_id }
+    """
+    # Validate key_name before forwarding.
+    # ImportError / ModuleNotFoundError → agent module not in path, fall through
+    # and let the downstream agent validate instead.
+    try:
+        from operator.agent.byok import validate_key_name  # type: ignore
+        validate_key_name(key_name)
+    except ImportError:
+        pass  # agent module unavailable in console context — delegate validation
+    except Exception as exc:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    if body.algorithm not in ("RSA-OAEP-SHA256", "RSA-OAEP"):
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported algorithm: {body.algorithm!r}",
+        )
+
+    result = _agent_post(f"/secrets/{key_name}", {
+        "ciphertext": body.ciphertext,
+        "algorithm": body.algorithm,
+        "updated_by": rec.sid_fingerprint[:8] if rec.sid_fingerprint else "console",
+    })
+
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "agent rejected secret"),
+        )
+
+    # Audit — key_name only, NO ciphertext, NO plaintext.
+    console_audit.action_performed(
+        tenant_id=rec.tenant_id,
+        sid_fingerprint=rec.sid_fingerprint,
+        action="byok.secret_updated",
+        target_kind="api_key",
+        target_id=key_name,
+    )
+
+    return {
+        "ok": True,
+        "key_name": key_name,
+        "rotated_at": result.get("rotated_at"),
+        "last4": result.get("last4"),
+    }
+
+
+# ── GET /byok/secrets ────────────────────────────────────────────────────
+
+@router.get("/secrets")
+def list_secrets(
+    rec: Annotated[session_auth.SessionRecord, Depends(require_session)],
+) -> dict[str, Any]:
+    """List BYOK key metadata for the tenant (NO values, NO ciphertext).
+
+    Returns presence for each well-known key.  In hosted mode proxies to
+    the Instance Agent; in self-hosted mode reads the vault directly.
+    """
+    known_keys = [
+        "anthropic_api_key",
+        "openai_api_key",
+        "stt_openai_api_key",
+        "stt_local_whisper_api_key",
+    ]
+
+    key_map: dict[str, Any] = {}
+    agent_ok: bool = False
+
+    if _is_hosted():
+        # Hosted mode: proxy to agent's /secrets endpoint.
+        # Agent already filters by byok tag and includes custom keys.
+        try:
+            agent_secrets = _agent_get("/secrets")
+            agent_ok = bool(agent_secrets.get("ok"))
+            key_map = {k["key_name"]: k for k in agent_secrets.get("keys", [])}
+        except HTTPException:
+            agent_ok = False
+    else:
+        # Self-hosted mode: read vault directly.
+        # Only include items tagged "byok" — prevents internal vault entries
+        # (provision tokens, friendship keys, etc.) from appearing in the UI.
+        try:
+            _shared = str(_REPO / "operator" / "bridges" / "shared")
+            if _shared not in sys.path:
+                sys.path.insert(0, _shared)
+            import vault as _vault_mod  # type: ignore
+            key_map = {
+                it["name"]: it
+                for it in _vault_mod.list_items()
+                if "byok" in (it.get("tags") or [])
+            }
+            agent_ok = True
+        except Exception:
+            agent_ok = False
+
+    # Always include all four known keys (presence may be False).
+    # Also surface custom BYOK keys (custom_<slug>) present in the vault.
+    custom_key_names = sorted(k for k in key_map if k.startswith("custom_"))
+    all_keys = known_keys + custom_key_names
+
+    keys_info = [
+        {
+            "key_name": k,
+            "present": k in key_map,
+            "algorithm": "RSA-OAEP-SHA256",
+        }
+        for k in all_keys
+    ]
+
+    return {
+        "tenant_id": rec.tenant_id,
+        "agent_reachable": agent_ok,
+        "keys": keys_info,
+        "note": "ciphertext and plaintext values are never returned by this endpoint",
+        "ts": time.time(),
+    }

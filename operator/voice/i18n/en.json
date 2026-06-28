@@ -1,0 +1,16 @@
+{
+  "lang": {
+    "set_ok": "Language set to {name} ({code}). Future replies, voice summaries, welcome cards and audience blocks switch to this language.",
+    "cleared": "Language preference cleared. Falling back to auto-detect (defaults to English).",
+    "current": "Current language: {name} ({code}).",
+    "current_unset": "No language preference set. Defaulting to {name} ({code}).",
+    "unknown": "Unknown language code '{raw}'. Try a BCP-47 code like de, en, zh-Hans, ja, fr, es. Type /lang list to see what is registered.",
+    "usage": "Usage: /lang <code|list|clear|show>. Examples: /lang zh-Hans, /lang ja, /lang clear.",
+    "list_header": "Registered language codes (you can also pass any other BCP-47 code; it just won't have an endonym):"
+  },
+  "consent": {
+    "ack_durable": "Granted. Your messages in this chat will be visible to the assistant until you /consent off.",
+    "ack_off": "Revoked. Your messages will not reach the assistant from now on.",
+    "drop_first": "Note: this chat has read-only mode. Your messages will not reach the assistant. Type /consent on to share."
+  }
+}

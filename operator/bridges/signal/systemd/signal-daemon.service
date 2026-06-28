@@ -1,0 +1,24 @@
+[Unit]
+Description=Corvin Signal Bridge Daemon
+After=network-online.target signal-cli-rest-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/Corvin/operator/bridges/signal
+ExecStart=/usr/bin/node daemon.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=corvin-signal
+
+# Credentials via environment (override settings.json)
+# EnvironmentFile=%h/.config/corvin-voice/signal.env
+# Environment=SIGNAL_NUMBER=+49...
+Environment=SIGNAL_API_URL=http://localhost:8080
+Environment=SIGNAL_HEALTH_PORT=7896
+Environment=SIGNAL_POLL_MS=500
+
+[Install]
+WantedBy=default.target

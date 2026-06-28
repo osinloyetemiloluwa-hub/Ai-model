@@ -1,0 +1,20 @@
+[Unit]
+Description=corvin-voice multi-channel bridge adapter (inbox -> claude -> outbox)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=__BRIDGES_DIR__/shared
+ExecStart=__PYTHON_BIN__ adapter.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.config/corvin-voice/service.env
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,166 @@
+# tenant.corvin.yaml — Operator tenant configuration template
+# Install to: <corvin_home>/tenants/_default/global/tenant.corvin.yaml
+# Hot-reloads on mtime change (no restart needed for most fields).
+#
+# Full schema: docs/claude-ref/adr-0007.md
+
+apiVersion: corvin/v1
+kind: Tenant
+metadata:
+  id: _default
+  display_name: "Single-Operator Default"
+  created_at: "2026-05-17T00:00:00Z"
+
+spec:
+  # ── Compliance zone (EU AI Act Art. 14) ─────────────────────────────────────
+  data_residency:
+    zone: null                 # null = no zone restriction
+    allowed_engines: []        # [] = all engines allowed
+    forbid_engines: []         # [] = none forbidden
+
+  # ── Data classification matrix (Layer 34 / ADR-0042) ────────────────────────
+  # Orthogonal to data_residency: data_residency answers "which engine_id
+  # is allowed at all?", data_classification answers "how sensitive can the
+  # task be before this engine becomes unacceptable?".
+  #
+  # Localities: local | eu_cloud | us_cloud | unknown
+  # network_egress: none | local | external
+  # SECRET requires network_egress=="none" in addition to the matrix.
+  #
+  # Data-residency restriction is OPT-IN. Defaults are permissive so a
+  # zero-config install runs frictionless on its cloud engine — a normal
+  # message with a name/e-mail is classified CONFIDENTIAL and must not be
+  # blocked by default:
+  #   PUBLIC / INTERNAL / CONFIDENTIAL : {local, eu_cloud, us_cloud}
+  #   SECRET                           : {local} (+ egress=none)  <- security floor
+  # SECRET (literal API keys / private keys / passwords) is the only row kept
+  # local-only by default; it fires rarely and stops credentials from egressing.
+  # To enforce EU/local data residency, TIGHTEN the matrix below (see the
+  # tenant.corvin.eu-production-ollama.yaml preset). The matrix and
+  # engine_compliance entries override entry-by-entry — leave commented out
+  # to keep the permissive module defaults.
+  data_classification:
+    matrix: {}
+    # Example TIGHTENING (uncomment + adjust for a residency-restricted tenant):
+    #   PUBLIC:       [local, eu_cloud]
+    #   INTERNAL:     [local, eu_cloud]
+    #   CONFIDENTIAL: [local]
+    #   SECRET:       [local]
+    engine_compliance: []
+    # - engine_id: opencode_ollama
+    #   locality: local
+    #   network_egress: local
+    #   notes: "qwen3:8b via local Ollama"
+    # - engine_id: opencode
+    #   locality: local
+    #   network_egress: local
+    #   notes: "pinned to --provider ollama in this tenant"
+
+  # ── Primary OS engine (ADR-0159 M1) ─────────────────────────────────────────
+  # Controls which engine handles the OS turn (the main conversation).
+  # Auto-detect ladder (applied when this field is absent):
+  #   1. CORVIN_OS_ENGINE env var
+  #   2. claude CLI on PATH  → claude_code
+  #   3. fallback            → hermes  (local Ollama, fully offline)
+  #
+  # Set explicitly to override auto-detect:
+  #   default_engine: hermes       # local Ollama (platform-independent, offline)
+  #   default_engine: claude_code  # Anthropic Claude (requires API key + claude CLI)
+  #   default_engine: opencode     # OpenCode (any provider, requires config)
+  #
+  # hermes_model: only used when default_engine is "hermes" or hermes is
+  # selected by auto-detect.  Defaults to the model set in Ollama at runtime.
+  # default_engine: hermes
+  # hermes_model: qwen3:8b
+
+  # ── Sandbox tier (ADR-0159 M2) ───────────────────────────────────────────────
+  # Controls Forge tool isolation.  Auto-detected at boot (bwrap → docker → none).
+  # Override with CORVIN_SANDBOX=bwrap|docker|none env var.
+  # Omit to use auto-detect (recommended).
+  # forge:
+  #   require_sandbox: false   # set true to CRITICAL-fail when sandbox unavailable
+
+  # ── Timer backend (ADR-0159 M3) ──────────────────────────────────────────────
+  # Auto-selected: systemd on Linux, ThreadTimerProvider elsewhere.
+  # Override with CORVIN_TIMER_PROVIDER=systemd|thread env var.
+
+  # ── Budget caps ──────────────────────────────────────────────────────────────
+  budget:
+    max_runs_per_day: null     # null = unlimited
+    max_tokens_per_day: null
+    max_wall_clock_per_run_s: null
+
+  # ── Compute worker (ADR-0013) ─────────────────────────────────────────────────
+  compute:
+    enabled: true
+    max_parallel_iterations: 4   # concurrent parameter-sweep iterations
+    max_concurrent_runs: 2       # concurrent compute jobs across chats
+    max_iterations_per_run: 200  # hard cap per job
+    max_wall_clock_per_run_s: 600  # 10 min per job
+    top_k_size: 5                # best-N results kept
+    disallow_llm_strategies: false
+    strategies_allowed:
+      - grid
+      - random
+      - bayesian
+    # Advanced compute fabric (ADR-0026) — leave defaults unless you run
+    # multi-node setups:
+    # fabric_enabled: false
+    # max_parallel_workers: 4
+    # max_artifact_size_mb: 500
+    # oracle_enabled: false
+    # oracle_model: null
+
+  # ── Compliance Manifest (ADR-0056) ───────────────────────────────────────────
+  # Controls how bridge.sh doctor and corvin-compliance-check validate the
+  # compliance rule manifest at compliance/*.yaml.
+  #
+  # min_version:          Minimum manifest version the system will accept.
+  #                       boot doctor fails CRITICAL if the on-disk manifest
+  #                       is older than this.
+  # require_signature:    When true, a missing manifest.sig is CRITICAL instead
+  #                       of WARNING.  Enable once you have generated the initial
+  #                       signature with compliance/sign.sh.
+  # signer_fingerprint:   GPG key fingerprint of the authorised manifest signer.
+  #                       Set this to the maintainer's long-form fingerprint
+  #                       (16 hex chars).  Leave empty to accept any valid sig.
+  compliance_manifest:
+    min_version: "1.0.0"
+    require_signature: true
+    signer_fingerprint: "72C1D704E30D83E5F547020E83A025CE5EBB2493"
+
+  # ── Web chat (ADR-0037 + ADR-0114) ──────────────────────────────────────────
+  # Controls the Console "Chat" tab — delegation, budget, and history.
+  # delegation_enabled must be true for the WDAT Worker Graph (Audit tab)
+  # to show runs.  Deny-by-default per ADR-0114; set true here so a
+  # fresh install can see the graph immediately.
+  web_chat:
+    delegation_enabled: true     # fan out long/complex tasks to ACS workers
+    # budget overrides (defaults shown):
+    # max_workers: 4
+    # max_iterations: 6
+
+  # ── User-Defined Learning Objectives (ADR-0163) ────────────────────────────────
+  # Deny-by-default: ULO is inactive unless a tenant explicitly opts in.
+  # Set enabled: true to let users personalise assistant behaviour via
+  # /objective add|pause|resume|delete.
+  ulo:
+    enabled: true
+
+  # ── ACS default worker model (ADR-0112 / ADR-0119) ───────────────────────────
+  # When delegation_enabled=true the orchestrator spawns worker agents.
+  # On a Hermes/local install the worker model should also be local so
+  # no Anthropic API key is required.  Set hermes to use Ollama workers
+  # or leave unset to inherit the OS-engine model automatically.
+  #
+  # acs:
+  #   default_worker_model: hermes   # ← set this if default_engine is hermes
+
+  # ── Plugin list (ADR-0030 + ADR-0033) ────────────────────────────────────────
+  plugins:
+    installed: []
+    # Example: custom notification backend
+    # - id: "com.acme.pagerduty"
+    #   class_path: "acme_plugins.pagerduty:PagerDutyNotifier"
+    #   config:
+    #     routing_key: "..."    # put API keys in vault, never here

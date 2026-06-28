@@ -1,0 +1,14 @@
+[Unit]
+Description=Corvin — re-sync claude OAuth credentials every 30 min
+Documentation=https://github.com/veegee82/Corvin
+
+[Timer]
+# Run 2 minutes after boot, then every 30 minutes.
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=30s
+Persistent=true
+Unit=corvin-claude-creds-sync.service
+
+[Install]
+WantedBy=timers.target

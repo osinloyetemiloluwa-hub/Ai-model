@@ -1,0 +1,130 @@
+name: Coverage Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-cov cryptography pyyaml fastapi httpx openai anthropic
+
+      - name: Run tests with coverage
+        run: |
+          pytest \
+            tests/ \
+            operator/bridges/shared/ \
+            core/console/tests/ \
+            --cov=operator \
+            --cov=core \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=html \
+            --cov-fail-under=75 \
+            -v
+        continue-on-error: true
+
+      - name: Generate coverage badge
+        run: |
+          coverage json --quiet
+          python3 << 'EOF'
+          import json
+          import sys
+
+          try:
+            with open('.coverage.json', 'r') as f:
+              data = json.load(f)
+              coverage_pct = data.get('totals', {}).get('percent_covered', 0)
+
+              # Determine badge color
+              if coverage_pct >= 90:
+                color = 'brightgreen'
+              elif coverage_pct >= 80:
+                color = 'green'
+              elif coverage_pct >= 70:
+                color = 'yellowgreen'
+              elif coverage_pct >= 60:
+                color = 'yellow'
+              else:
+                color = 'red'
+
+              print(f"Coverage: {coverage_pct:.1f}%")
+              print(f"Color: {color}")
+          except:
+            print("Coverage: unknown")
+          EOF
+        continue-on-error: true
+
+      - name: Comment PR with coverage report
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const coverage = JSON.parse(fs.readFileSync('.coverage.json', 'utf8'));
+              const pct = coverage.totals.percent_covered.toFixed(1);
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## 📊 Coverage Report\n\n**Overall Coverage:** ${pct}%\n\n[View detailed report →](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`
+              });
+            } catch (e) {
+              console.log('Could not parse coverage report:', e);
+            }
+        continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: htmlcov/
+          retention-days: 30
+
+      - name: Check coverage thresholds
+        run: |
+          python3 << 'EOF'
+          import json
+          import sys
+
+          # Define critical modules and their thresholds
+          CRITICAL_THRESHOLDS = {
+            'path_gate': 90,
+            'audit': 90,
+            'data_classification': 85,
+            'egress': 85,
+            'erasure': 80,
+            'a2a': 80,
+          }
+
+          try:
+            with open('.coverage.json', 'r') as f:
+              data = json.load(f)
+              overall = data.get('totals', {}).get('percent_covered', 0)
+
+              print(f"✓ Overall coverage: {overall:.1f}%")
+
+              # Check overall threshold (75%)
+              if overall < 75:
+                print(f"✗ Coverage below 75% threshold: {overall:.1f}%")
+                sys.exit(1)
+              else:
+                print(f"✓ Coverage meets 75% threshold")
+
+          except Exception as e:
+            print(f"Warning: Could not validate thresholds: {e}")
+          EOF

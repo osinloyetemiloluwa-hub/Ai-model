@@ -1,0 +1,115 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python deps
+        run: pip install openai anthropic pytest cryptography pyyaml fastapi matplotlib httpx itsdangerous python-multipart "PyJWT[crypto]"
+      - name: Install Node deps (all bridges)
+        run: |
+          for d in operator/bridges/*/; do
+            if [ -f "$d/package.json" ]; then
+              npm install --prefix "$d" --silent
+            fi
+          done
+      - name: Run test suite
+        run: |
+          bash operator/bridges/run-all-tests.sh 2>&1 | tee /tmp/test-output.log
+          exit ${PIPESTATUS[0]}
+        env:
+          CORVIN_AGENTS_SKIP_LIVE: "1"
+          # Dual-env test bypass (FND-LIC-01): the delegate/engine standalone
+          # scripts in run-all-tests.sh are run via `python3` (no pytest conftest),
+          # so the intended mock-engine license bypass must come from the runner.
+          # BOTH vars together = the sanctioned test config; SKIP_LIVE alone is
+          # treated as an attempted bypass (license.gate_bypassed CRITICAL) and
+          # makes run_delegate fail-closed. Never set in production.
+          CORVIN_INTEGRATION_TEST: "1"
+          CORVIN_SKIP_SLOW_TESTS: "1"
+      - name: Show failed suites on error
+        if: failure()
+        run: grep -E "FAIL|failed|ERROR" /tmp/test-output.log | grep -v "^2026\|fail-open\|fail-closed\|_failed\|FakeProc\|write failed\|register failed\|streaming returned\|falling back" || true
+
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-suite:
+          - comprehensive-ui-integration
+          - complete-feature-coverage
+          - edge-cases-and-failures
+          - security-session-auth
+          # NOTE: custom-provider E2E tests require running console on http://127.0.0.1:8765
+          # They are designed for local interactive testing, not headless CI.
+          # Run locally with: BASE_URL=http://127.0.0.1:8765 npx playwright test tests/e2e/custom-provider.spec.ts
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check Node and npm versions
+        run: |
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
+          echo "package-lock.json exists: $([ -f package-lock.json ] && echo 'YES' || echo 'NO')"
+        working-directory: core/console/corvin_console/web-next
+
+      - name: Install dependencies
+        run: npm install --prefer-offline --no-audit 2>&1 | tail -20
+        working-directory: core/console/corvin_console/web-next
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+        working-directory: core/console/corvin_console/web-next
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: core/console/corvin_console/web-next
+
+      - name: Run E2E tests - ${{ matrix.test-suite }}
+        run: |
+          if [ -f "tests/e2e/${{ matrix.test-suite }}.spec.ts" ]; then
+            npm run test:e2e -- tests/e2e/${{ matrix.test-suite }}.spec.ts \
+              --reporter=list \
+              --project=chromium \
+              --project=firefox
+          else
+            echo "Test suite ${{ matrix.test-suite }}.spec.ts not found, skipping"
+          fi
+        working-directory: core/console/corvin_console/web-next
+        timeout-minutes: 30
+        env:
+          CI: true
+
+  e2e-summary:
+    runs-on: ubuntu-latest
+    needs: e2e
+    if: always()
+    steps:
+      - name: Check E2E test status
+        run: |
+          if [ "${{ needs.e2e.result }}" == "failure" ]; then
+            echo "❌ Some E2E tests failed"
+            exit 1
+          else
+            echo "✅ All E2E tests passed"
+          fi

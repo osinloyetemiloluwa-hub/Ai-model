@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# .ldd/ldd_trace — project-local launcher for the LDD trace CLI.
+#
+# Resolves the LDD plugin's `scripts/` directory (where the `ldd_trace`
+# Python package lives) and execs `python -m ldd_trace` with PYTHONPATH
+# correctly set. This exists because the plugin ships library code but
+# not a system-installed CLI — without this shim every `python -m
+# ldd_trace ...` invocation fails with ModuleNotFoundError.
+#
+# Search order for the plugin root:
+#   1. $LDD_PLUGIN_ROOT   (explicit override)
+#   2. Highest-semver dir under $HOME/.claude/plugins/cache/loss-driven-development/loss-driven-development/
+#   3. Local dev checkout at $HOME/projects/loss-driven-development/
+#
+# Dropped in by bootstrap-userspace on Tier-0 init; safe to edit if you
+# want to pin a specific plugin version — just set LDD_PLUGIN_ROOT in
+# your shell env or above the auto-detect block.
+
+set -euo pipefail
+
+resolve_plugin_root() {
+    if [[ -n "${LDD_PLUGIN_ROOT:-}" ]]; then
+        [[ -d "$LDD_PLUGIN_ROOT/scripts/ldd_trace" ]] && { echo "$LDD_PLUGIN_ROOT"; return; }
+    fi
+
+    local cache_base="$HOME/.claude/plugins/cache/loss-driven-development/loss-driven-development"
+    if [[ -d "$cache_base" ]]; then
+        local latest
+        latest=$(ls -1 "$cache_base" 2>/dev/null | sort -V | tac | while read -r v; do
+            if [[ -d "$cache_base/$v/scripts/ldd_trace" ]]; then
+                echo "$v"
+                break
+            fi
+        done)
+        if [[ -n "$latest" ]]; then
+            echo "$cache_base/$latest"
+            return
+        fi
+    fi
+
+    local dev_checkout="$HOME/projects/loss-driven-development"
+    if [[ -d "$dev_checkout/scripts/ldd_trace" ]]; then
+        echo "$dev_checkout"
+        return
+    fi
+
+    echo ""
+}
+
+PLUGIN_ROOT=$(resolve_plugin_root)
+
+if [[ -z "$PLUGIN_ROOT" ]]; then
+    cat >&2 <<EOF
+.ldd/ldd_trace: cannot locate the LDD plugin root.
+Tried:
+  \$LDD_PLUGIN_ROOT (unset or invalid)
+  \$HOME/.claude/plugins/cache/loss-driven-development/loss-driven-development/<version>/scripts/ldd_trace
+  \$HOME/projects/loss-driven-development/scripts/ldd_trace
+
+Install the LDD plugin or set LDD_PLUGIN_ROOT explicitly.
+EOF
+    exit 127
+fi
+
+# Resolve a Python 3.8+ interpreter in order of preference:
+#   1. $LDD_PYTHON — explicit override (e.g. a venv / conda env)
+#   2. python3    — Linux and Homebrew-macOS default
+#   3. python     — macOS system default when it points at Python 3
+# The ldd_trace package is stdlib-only; the --version probe rejects a
+# `python` that points at Python 2 here, rather than producing a
+# ModuleNotFoundError 20 lines deep in ldd_trace.cli.
+resolve_python() {
+    local candidate
+    for candidate in "${LDD_PYTHON:-}" python3 python; do
+        [[ -z "$candidate" ]] && continue
+        if command -v "$candidate" >/dev/null 2>&1 \
+           && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo ""
+}
+
+PY=$(resolve_python)
+if [[ -z "$PY" ]]; then
+    cat >&2 <<'EOF'
+.ldd/ldd_trace: no usable Python 3.8+ interpreter found.
+Tried (in order): $LDD_PYTHON, python3, python.
+
+Install Python 3.8 or newer, or set LDD_PYTHON to the interpreter path:
+    LDD_PYTHON=/usr/bin/python3.11 .ldd/ldd_trace <args>
+EOF
+    exit 127
+fi
+
+export PYTHONPATH="$PLUGIN_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PY" -m ldd_trace "$@"

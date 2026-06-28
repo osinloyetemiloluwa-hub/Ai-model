@@ -1,0 +1,300 @@
+"""CodexCliEngine — wraps `codex exec --json`.
+
+Phase 1 (ADR-0001): minimal-invasive engine that spawns the OpenAI Codex
+CLI as a non-interactive subprocess. New backend, no existing code path
+to interop with. Exists primarily to validate the WorkerEngine protocol
+against a non-Claude backend.
+
+Stream event shape from `codex exec --json` (codex-cli 0.125.0):
+
+    {"type":"thread.started","thread_id":"019e..."}
+    {"type":"turn.started"}
+    {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"pong"}}
+    {"type":"turn.completed","usage":{"input_tokens":23267,"output_tokens":16,...}}
+
+Mapping (see ADR-0001):
+    thread.started                                       -> session_started
+    item.completed (item.type=agent_message)             -> text_delta
+    turn.completed                                       -> turn_completed
+    everything else (turn.started, thinking, ...)        -> dropped
+
+Codex notes
+-----------
+
+* Unlike Claude Code's stream, Codex does NOT emit incremental text
+  deltas — the agent_message arrives complete in one item.completed.
+* Codex's `usage` shape differs (input_tokens/cached_input_tokens/
+  output_tokens vs. Claude's input_tokens/cache_creation_input_tokens/
+  cache_read_input_tokens/output_tokens). Engine surfaces both shapes
+  verbatim under `event.usage`; consumers normalize at the call site.
+* Default sandbox for the engine is `read-only`. Callers that need
+  workspace-write or full-access pass `--sandbox` via `extra_args`.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import time
+from pathlib import Path
+from typing import Any, Iterator
+
+from . import StreamEvent, parse_jsonl_line
+
+
+# Path resolution: try $CODEX_BIN, then the canonical nvm location
+# (where `npm install -g @openai/codex` lands when nvm-managed Node is
+# active). Fall back to the bare name and let PATH resolution try.
+def _resolve_codex_binary() -> str:
+    if (override := os.environ.get("CODEX_BIN")):
+        return override
+    nvm_candidate = Path.home() / ".nvm/versions/node/v22.22.0/bin/codex"
+    if nvm_candidate.exists():
+        return str(nvm_candidate)
+    return "codex"
+
+
+class CodexCliEngine:
+    """OpenAI Codex CLI as a backend-agnostic engine."""
+
+    name = "codex_cli"
+
+    capabilities: dict[str, Any] = {
+        "mid_stream_inject": "buffered",  # M2: buffered /btw queue for next turn
+        "hooks": "teb_brokered",  # M4: synthetic hooks via TEB
+        "skills": "append_system_prompt",  # M3: skill compilation
+        "skills_tool": False,           # no first-class skill API; emulate via prompt
+        "mcp": True,                    # `codex mcp` subcommand
+        "stream_json": True,
+        "permission_modes": ["read-only", "workspace-write", "danger-full-access"],
+        "add_system_prompt": False,     # no --append-system-prompt; use prompt-prefix
+        "version_flag": "--version",
+        "session_pinning": False,       # ADR-0049: no --resume equivalent
+    }
+
+    def __init__(self, *, binary: str | None = None) -> None:
+        self.binary = binary or _resolve_codex_binary()
+        self._proc: subprocess.Popen[bytes] | None = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    _SANDBOX_MAP: dict[str, str] = {
+        "bypassPermissions": "danger-full-access",
+        "acceptEdits": "workspace-write",
+        "default": "read-only",
+        "plan": "read-only",
+    }
+
+    def spawn(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        model: str | None = None,
+        working_dir: Path | None = None,
+        timeout: float = 120.0,
+        permission_mode: str | None = None,
+        extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        session_dir: Path | None = None,  # M2: for buffered /btw dequeue
+    ) -> Iterator[StreamEvent]:
+        # M2: Check for buffered /btw injections from prior turns
+        user_prompt = prompt
+        if session_dir:
+            try:
+                from eci.transport_buffered import dequeue_all_injections
+                buffered = dequeue_all_injections(session_dir)
+                if buffered:
+                    user_prompt = buffered + "\n\n" + prompt
+            except ImportError:
+                pass
+
+        # Resolve --sandbox from permission_mode; default to "read-only".
+        # Filter any --sandbox already present in extra_args to avoid the
+        # "argument used multiple times" error when callers pass it there.
+        sandbox = self._SANDBOX_MAP.get(permission_mode or "default", "read-only")
+        filtered_extra: list[str] = []
+        if extra_args:
+            it = iter(extra_args)
+            for arg in it:
+                if arg == "--sandbox":
+                    # consume the value token and let our sandbox win
+                    next(it, None)
+                else:
+                    filtered_extra.append(arg)
+
+        # codex exec is the non-interactive subcommand.
+        args = [
+            self.binary, "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--sandbox", sandbox,
+        ]
+        if model:
+            args += ["--model", model]
+        if working_dir:
+            args += ["-C", str(working_dir)]
+        if filtered_extra:
+            args += filtered_extra
+
+        # Codex has no `--append-system-prompt`. Emulate via a prepended
+        # SYSTEM block in the prompt itself. Adapter callers that want
+        # tighter integration should switch to MCP-server-based system
+        # injection (Phase 2+).
+        if system:
+            full_prompt = f"<SYSTEM>\n{system}\n</SYSTEM>\n\n{user_prompt}"
+        else:
+            full_prompt = user_prompt
+
+        args.append(full_prompt)
+
+        spawn_env = os.environ.copy()
+        if env:
+            spawn_env.update(env)
+
+        cwd = str(working_dir) if working_dir else None
+        start_time = time.time()
+
+        try:
+            self._proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+                env=spawn_env,
+            )
+        except FileNotFoundError:
+            yield StreamEvent(
+                type="error",
+                error=f"codex binary not found: {self.binary!r}",
+            )
+            return
+
+        try:
+            yield from self._iter_stream(start_time, timeout)
+        finally:
+            self._cleanup_proc()
+
+    def _cleanup_proc(self) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        for fh in (proc.stdout, proc.stderr):
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+
+    def cancel(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    # ECI manifest (ADR-0069 M2+M6)
+    @property
+    def command_manifest(self):  # type: ignore[return]
+        from eci import EngineCommandManifest
+        return EngineCommandManifest(
+            mid_stream_inject="buffered",  # M2: buffered queue for /btw
+            cancel="sigterm",
+            compact=None,
+            native_commands={},
+        )
+
+    # ------------------------------------------------------------------
+    # Internal: stream parser
+    # ------------------------------------------------------------------
+
+    def _iter_stream(
+        self, start_time: float, timeout: float
+    ) -> Iterator[StreamEvent]:
+        proc = self._proc
+        assert proc is not None and proc.stdout is not None
+
+        completed = False
+        accumulated_text: list[str] = []
+
+        for raw_line in proc.stdout:
+            if time.time() - start_time > timeout:
+                yield StreamEvent(type="error", error="codex stream timeout")
+                return
+
+            obj = parse_jsonl_line(raw_line)
+            if obj is None:
+                continue
+
+            event = self._normalise(obj, accumulated_text)
+            if event is None:
+                continue
+            yield event
+            if event.type == "turn_completed":
+                completed = True
+                break
+            if event.type == "error":
+                completed = True
+                break
+
+        if not completed:
+            stderr = b""
+            try:
+                if proc.stderr:
+                    stderr = proc.stderr.read() or b""
+            except Exception:
+                pass
+            err = stderr.decode("utf-8", errors="replace").strip() or (
+                f"codex exited without turn.completed (exit_code={proc.poll()})"
+            )
+            yield StreamEvent(type="error", error=err)
+
+    @staticmethod
+    def _normalise(
+        obj: dict[str, Any], accumulated_text: list[str]
+    ) -> StreamEvent | None:
+        kind = obj.get("type")
+
+        if kind == "thread.started":
+            return StreamEvent(type="session_started", raw=obj)
+
+        if kind == "item.completed":
+            item = obj.get("item") or {}
+            if item.get("type") == "agent_message":
+                text = item.get("text", "") or ""
+                if text:
+                    accumulated_text.append(text)
+                    return StreamEvent(type="text_delta", text=text, raw=obj)
+            return None
+
+        if kind == "turn.completed":
+            usage = obj.get("usage") or {}
+            # Codex doesn't include final-text in turn.completed — pull
+            # from accumulated_text so collect() ends up with the same
+            # final_text shape regardless of engine.
+            final_text = "".join(accumulated_text)
+            return StreamEvent(
+                type="turn_completed",
+                text=final_text,
+                usage=usage,
+                raw=obj,
+            )
+
+        if kind == "turn.failed":
+            err = obj.get("error") or obj.get("message") or "turn.failed"
+            return StreamEvent(type="error", error=str(err), raw=obj)
+
+        # turn.started, item.in_progress, thread.completed, ... → ignore.
+        return None

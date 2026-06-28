@@ -1,0 +1,293 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corvinos"
+version = "0.9.52"
+description = "CorvinOS — universal, self-contained, cross-platform AI assistant framework"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Shumway", email = "silvio.jurk@googlemail.com" }
+]
+keywords = [
+    "ai",
+    "agent",
+    "multi-platform",
+    "installer",
+    "cross-platform",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Shells",
+    "Topic :: System :: Systems Administration",
+]
+requires-python = ">=3.10"
+dependencies = [
+    # Web console (always included — no extras needed)
+    "fastapi >= 0.110",
+    "uvicorn[standard] >= 0.27",
+    "pyyaml >= 6.0",
+    "pydantic >= 2.4",
+    "httpx >= 0.27",
+    "PyJWT[crypto] >= 2.8",
+    "cryptography >= 42",
+    "anthropic >= 0.25",
+    "python-multipart >= 0.0.6",
+    # Voice subsystem — pure-Python, cross-platform TTS fallback (Microsoft Edge).
+    # The HEAVY *local* voice models (piper-tts, faster-whisper) are NOT base
+    # deps: piper-tts ships a Windows wheel only for cp39 and faster-whisper pulls
+    # `av`, which has no cp312/cp313 Windows wheel — making them base deps broke
+    # `pip install corvinos` on Windows/Python>=3.10 before setup was ever
+    # reached. They now live in the optional `voice` extra; cloud/edge TTS + STT
+    # (via edge-tts + the OpenAI SDK below) work out of the box.
+    "edge-tts >= 6.1.8",
+    # Local STT — faster-whisper on Linux/macOS; Windows lacks av wheels for cp312+.
+    # On Windows, STT falls back to OpenAI Whisper (openai SDK already a base dep).
+    "faster-whisper >= 1.0.0; sys_platform != 'win32'",
+    # OpenAI SDK — TTS fallback, Whisper STT provider, and ImageGen MCP (standard
+    # feature). Pure-Python; installs cleanly on every platform.
+    "openai >= 1.0",
+    # Forge (L6): JSON-Schema validation of generated tool I/O — a core safety
+    # gate, not optional. corvin-a2a pair emits a QR code for the friendship token.
+    "jsonschema >= 4.0",
+    "qrcode >= 7.0",
+]
+
+[project.optional-dependencies]
+# console is now part of the base install — kept as empty alias for backward compat
+console = []
+bridges = [
+    "whatsapp-web.py >= 0.1",
+    "python-telegram-bot >= 20.0",
+    "discord.py >= 2.0",
+    "slack-bolt >= 1.18",
+]
+dev = [
+    "pytest >= 7.0",
+    "pytest-cov >= 4.0",
+    "black >= 23.0",
+    "ruff >= 0.1.0",
+    "mypy >= 1.0",
+]
+# Compute/data subsystem (L24/L25, A2A compute engine): CSV->PNG, external DBs.
+compute = [
+    "matplotlib >= 3.7",
+    "duckdb >= 0.9",
+    "psycopg2-binary >= 2.9",
+]
+# Prometheus metrics export (engine/voice metrics).
+metrics = [
+    "prometheus-client >= 0.19",
+]
+# Local (offline) voice models — heavy, platform-sensitive. Cloud/edge voice
+# works without these (edge-tts + openai are base deps). piper-tts has a Windows
+# wheel only for cp39 and faster-whisper pulls `av` (no cp312/cp313 Windows
+# wheel), so these are opt-in to keep the base install Windows-friendly.
+voice = [
+    "piper-tts >= 1.4.1",
+    "faster-whisper >= 1.0.0",
+]
+all = [
+    "whatsapp-web.py >= 0.1",
+    "python-telegram-bot >= 20.0",
+    "discord.py >= 2.0",
+    "slack-bolt >= 1.18",
+    "matplotlib >= 3.7",
+    "duckdb >= 0.9",
+    "psycopg2-binary >= 2.9",
+    "prometheus-client >= 0.19",
+    "piper-tts >= 1.4.1",
+    "faster-whisper >= 1.0.0",
+]
+
+[project.urls]
+Homepage = "https://corvin.ai"
+Documentation = "https://corvin.ai/docs"
+Repository = "https://github.com/CorvinLabs/CorvinOS"
+Issues = "https://github.com/CorvinLabs/CorvinOS/issues"
+
+# ── Nervous System Entry Points (ADR-0177) ───────────────────────────────────
+# Third-party packages and extensions register additional Nerve Fibers here.
+# CorvinOS discovers them automatically at boot (Tier-1 discovery).
+# Format: <name> = "<module>:<FiberClass>"
+# Example for a custom connector:
+#   [project.entry-points."corvinOS.nerve_fibers"]
+#   my_connector = "my_package.nerve:MyConnectorFiber"
+[project.entry-points."corvinOS.nerve_fibers"]
+# Built-in fibers are Tier-0 (hardcoded) and do NOT need entry points.
+# This section is intentionally empty in the core package — it is the
+# extension point for operators and third-party packages.
+
+[project.scripts]
+# Main CLI entry points
+corvin-install = "corvinOS.installer:main_install"
+corvin-uninstall = "corvinOS.installer:main_uninstall"
+corvin-restore = "corvinOS.installer:main_restore"
+corvin = "ops.launcher.corvin.cli:main"
+# Package-name aliases: `corvinos` / `corvinos-serve` match the PyPI distribution
+# name so a new user who runs `pip install corvinos` can discover the command by
+# name. These are exact aliases of `corvin` / `corvin-serve`.
+corvinos = "ops.launcher.corvin.cli:main"
+# Shortcut for native (no-Docker) mode: `corvin-serve` == `corvin serve`
+corvin-serve = "ops.launcher.corvin.serve_entry:main"
+corvinos-serve = "ops.launcher.corvin.serve_entry:main"
+# ADR-0109: WDAT compliance report generator
+# Shim needed because operator/ conflicts with Python stdlib 'operator' module name.
+corvin-wdat-report = "ops.launcher.wdat_report_entry:main"
+# ADR-0121: CorvinFlow declarative multi-node workflow CLI
+corvin-flow = "ops.launcher.flow_entry:main"
+# ADR-0142: Layer Extension API — manage user-managed layer extensions.
+corvin-layer = "ops.launcher.layer_entry:main"
+# L38 A2A: agent-to-agent pairing/send CLI + local instance identity.
+# Shims needed because operator/ shadows the Python stdlib 'operator' module.
+corvin-a2a = "ops.launcher.a2a_entry:main"
+corvin-instance-id = "ops.launcher.instance_id_entry:main"
+# ADR-0153 M4: CorvinID instance certificate management CLI.
+corvin-id = "ops.launcher.corvin_id_entry:main"
+# ADR-0154 M6: OTA license diagnostics (operator-only MSLI shard check).
+corvin-license-debug = "ops.launcher.license_debug_entry:main"
+
+[tool.hatch.build.targets.sdist.force-include]
+# Ship the PRE-BUILT SPA in the sdist so a wheel built FROM the sdist (the
+# `python -m build` sdist→wheel pipeline, and any `pip install` that falls back
+# to the sdist) finds web-next/dist already present and skips the npm build —
+# no Node.js required to install from source. Without this the build hook tries
+# `npm ci` in the isolated sdist dir (no node_modules, no lockfile) and the
+# build hard-fails. dist/ is gitignored, so it must be built before packaging.
+"core/console/corvin_console/web-next/dist" = "core/console/corvin_console/web-next/dist"
+
+[tool.hatch.build.targets.wheel]
+packages = ["corvinOS", "core", "ops"]
+# Exclude the SPA dist from auto-package globbing: it is shipped via the
+# force-include below, and letting both rules match the same files raises a
+# "second file added at the same path" collision when dist exists at build
+# time. force-include bypasses this exclude, so dist still ships exactly once.
+exclude = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    # Ship ONLY the pre-built SPA (force-included below as web-next/dist), never
+    # the frontend source tree, CI test artifacts, or build config. `sources`
+    # maps core/console to the wheel root, which would otherwise glob the whole
+    # web-next/ tree (TS src, playwright-report/, test-results/, *.config.*) —
+    # ~2.8 MB of source + gitignored E2E screenshots — into a PUBLIC wheel. The
+    # force-include of web-next/dist bypasses this exclude, so dist still ships
+    # exactly once.
+    "**/web-next/**",
+    # core/console and core/license both map to wheel root via sources "".
+    # Any file at the same relative path in both dirs collides. Strip all
+    # non-package content (dev files, tests, dotfiles, docs).
+    "**/.gitignore",
+    "**/.pytest_cache/**",
+    "**/.venv/**",
+    "**/*.md",
+    "**/requirements.txt",
+    "**/bootstrap.sh",
+    "**/install-systemd.sh",
+    # Internal test suites must never ship in the wheel. Several subtrees
+    # (core/gateway, core/console, core/license) map to the wheel root via
+    # [tool.hatch.build.targets.wheel.sources], so an un-excluded core/<x>/tests/
+    # would pollute a top-level `tests` namespace in site-packages. Exclude all
+    # test content generically rather than enumerating each subtree.
+    "**/tests/**",
+    "**/test_*.py",
+    "**/conftest.py",
+    "core/console/tests/**",
+    "core/license/tests/**",
+    "core/console/systemd/**",
+    # ops/ ships only the launcher Python package; strip its build artifacts,
+    # nested pyproject, shell installers, and the Go-based ollama-pr subtree.
+    "ops/launcher/dist/**",
+    "ops/launcher/build/**",
+    "ops/launcher/pyproject.toml",
+    "ops/ollama-pr/**",
+    "**/*.go",
+    "**/install.sh",
+    "**/install.ps1",
+]
+
+# Custom build hook that vendors pruned operator subtrees into the wheel
+# (see hatch_build.py / VendorOperatorHook).
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.wheel.sources]
+"core/console" = ""
+"core/gateway" = ""
+# corvin_license plugin (RS256 JWT gate) is imported as top-level `corvin_license`
+# throughout the codebase — remap so it lands at the wheel root rather than
+# core/license/corvin_license/ (which would break `from corvin_license.verifier import …`).
+"core/license" = ""
+
+[tool.hatch.build.targets.wheel.force-include]
+# Windows PATH auto-fix: placed at wheel root → lands in site-packages as
+# corvinOS_path_fix.pth.  Python processes it on startup via the .pth mechanism,
+# which calls corvinOS._win_path_fix._ensure_scripts_on_path() and adds the
+# Scripts directory containing corvin-serve.exe to the Windows user PATH (registry)
+# on first run.  No-op on Linux/macOS.  (fixes "corvin-serve not found" on Store Python)
+"corvinOS_path_fix.pth" = "corvinOS_path_fix.pth"
+# Ship the pre-built React SPA so `pip install corvinOS` works
+# without requiring npm on the target machine. The wheel builder must run
+# `npm run build` in core/console/corvin_console/web-next/ before packaging.
+"core/console/corvin_console/web-next/dist" = "corvin_console/web-next/dist"
+# ADR-0125: include engine detection + bootstrap helpers so the
+# /detect and /bootstrap endpoints work in a pure wheel install
+# (source-tree mode uses the sys.path injection in engine.py as before).
+"operator/bridges/shared/engine_detection.py" = "corvin_console/engine_detection.py"
+"operator/bridges/shared/hermes_bootstrap.py" = "corvin_console/hermes_bootstrap.py"
+# Operator runtime-dependency vendoring (wheel-only) is performed by the
+# custom build hook in hatch_build.py (VendorOperatorHook). 56 console modules
+# reach into operator/* via repo-relative sys.path injection, which resolves
+# into a non-existent operator/ inside site-packages on a wheel install
+# (ModuleNotFoundError: No module named 'forge'). The hook stages PRUNED copies
+# (tests stripped — force-include ignores `exclude`, so pruning must happen in
+# the hook) of the needed subtrees into corvin_console/_vendor/operator/<same-
+# relative-layout>; _operator_bootstrap.py then prepends them onto sys.path at
+# import time. Source-tree mode never gains a _vendor/ dir, so the bootstrap
+# stays a no-op there and the existing per-module injection keeps working.
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312", "py313"]
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # Black handles long lines
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--verbose"

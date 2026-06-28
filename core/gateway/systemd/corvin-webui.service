@@ -1,0 +1,45 @@
+# TEMPLATE — __REPO_ROOT__ is substituted by bridge.sh install_units().
+# Do NOT copy this file directly to a systemd directory; the placeholders will
+# remain literal and the service will fail. Use: bridge.sh up (or bridge.sh install-units)
+[Unit]
+Description=Corvin WebUI — gateway + console (uvicorn)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+# ADR-0007: pin the runtime root EXPLICITLY so corvin_home() is deterministic and
+# never cwd-walk-resolved. Without this the console (reader) and the adapter / ACS
+# (writers) can resolve different homes from their respective cwds, and ACS runs /
+# worker-audit land in a home the console never reads → empty WDAT worker graph.
+# (service.env, loaded below, may override this with the operator's chosen home;
+# both must agree across ALL units.)
+Environment=CORVIN_HOME=__REPO_ROOT__/.corvin
+Environment=PYTHONPATH=__REPO_ROOT__/core/console:__REPO_ROOT__/core/gateway:__REPO_ROOT__/core/license:__REPO_ROOT__/core/compliance:__REPO_ROOT__/operator/forge:__REPO_ROOT__/operator/skill-forge:__REPO_ROOT__/operator/bridges/shared
+# Hot-reload is DELIBERATELY OFF for the systemd (always-on) deployment.
+# The console is the operator command-centre: chat turns routinely edit repo
+# code under core/console / core/gateway, and uvicorn --reload closes every
+# live WebSocket with code 1012 (Service Restart) on each such change — which
+# the chat client surfaces as "Connection error — reconnecting…" after a task.
+# Keeping reload OFF here makes the command-centre WebSocket stable. Developers
+# who want auto-reload run the foreground host instead:
+#   CORVIN_CONSOLE_RELOAD=1 bridge.sh console
+# After deploying new console/gateway code, apply it with:  systemctl --user restart corvin-webui
+# Auto-bootstrap the console venv when it is absent (e.g. fresh clone, git
+# clean, or first boot after install). Skipped instantly when the venv already
+# exists, so the normal reboot path has zero overhead.
+ExecStartPre=/bin/bash -c 'test -x __REPO_ROOT__/core/console/.venv/bin/python || bash __REPO_ROOT__/core/console/bootstrap.sh'
+ExecStart=__REPO_ROOT__/core/console/.venv/bin/python -m uvicorn corvin_gateway.app:app --host 127.0.0.1 --port 8765 --log-level info
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=-%h/.config/corvin-voice/service.env
+
+[Install]
+WantedBy=default.target

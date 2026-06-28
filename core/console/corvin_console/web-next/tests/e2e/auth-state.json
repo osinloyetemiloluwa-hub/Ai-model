@@ -1,0 +1,25 @@
+{
+  "cookies": [
+    {
+      "name": "corvin_console_sid",
+      "value": "PLACEHOLDER_REGENERATED_BY_E2E_SETUP",
+      "domain": "localhost",
+      "path": "/",
+      "expires": 1782711083.178033,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Strict"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "http://localhost:5173",
+      "localStorage": [
+        {
+          "name": "corvin-theme",
+          "value": "auto"
+        }
+      ]
+    }
+  ]
+}
