@@ -79,6 +79,19 @@ pip install "corvinos[voice]"   # local Piper TTS + faster-whisper STT
 Default engine: Claude Code (Claude Pro or Max subscription required).
 For fully local, zero-egress deployment: `--engine hermes` (Ollama, no API key).
 
+**Alternative package managers:**
+
+```bash
+# macOS / Linux — Homebrew
+brew tap CorvinLabs/corvinos && brew install corvinos
+
+# Windows — Scoop
+scoop bucket add corvinos https://github.com/CorvinLabs/scoop-corvinos && scoop install corvinos
+
+# conda / mamba (pending review)
+conda install -c conda-forge corvinos
+```
+
 ```bash
 # Developer install from source
 git clone https://github.com/CorvinLabs/CorvinOS.git && cd CorvinOS
