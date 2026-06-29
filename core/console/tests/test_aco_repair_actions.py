@@ -1,0 +1,173 @@
+"""ADR-0178 M1 — ACO L5 Actuating Self-Repair (Tier LOCAL).
+
+Proves: bounded to CORVIN_HOME (code-immutable), each SAFE action repairs its
+fault, loss-gated rollback when a fix doesn't take, kill switch + risky gating,
+dry-run is read-only.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[3]
+for _p in (_REPO / "core" / "console", _REPO / "operator" / "forge"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import pytest
+from corvin_console.aco import repair_actions as RA  # type: ignore
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    monkeypatch.delenv("CORVIN_ACO_L5_OFF", raising=False)
+    monkeypatch.delenv("CORVIN_ACO_L5_RISKY", raising=False)
+
+
+def _ctx(tmp_path: Path, now: float = 0.0) -> RA.RepairContext:
+    return RA.RepairContext(corvin_home=tmp_path, tenant_id="_default", now=now)
+
+
+# ── scope guard (the code-immutability guarantee) ─────────────────────────────
+
+def test_assert_within_home_refuses_outside(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    RA._assert_within_home(home, home / "ok" / "file")          # inside → fine
+    with pytest.raises(RA.RepairScopeError):
+        RA._assert_within_home(home, tmp_path / "outside")       # sibling → refused
+    with pytest.raises(RA.RepairScopeError):
+        RA._assert_within_home(home, Path("/usr/lib/python3/site-packages/x.py"))
+
+
+# ── session_workdir_missing ───────────────────────────────────────────────────
+
+def test_recreates_missing_session_workdir(tmp_path):
+    home = tmp_path
+    wd = home / "tenants" / "_default" / "sessions" / "web_abc123"
+    meta_dir = home / "tenants" / "_default" / "global" / "web_chat" / "sessions"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "abc123.json").write_text(f'{{"sid":"abc123","workdir":"{wd.as_posix()}"}}',
+                                          encoding="utf-8")
+    assert not wd.exists()
+    out = RA.run_local_repairs(_ctx(home))
+    applied = {o.action_id: o for o in out if o.status == "applied"}
+    assert "session_workdir_missing" in applied
+    assert wd.is_dir()
+
+
+def test_workdir_action_refuses_path_outside_home(tmp_path):
+    home = tmp_path / "home"; home.mkdir()
+    evil = tmp_path / "escape"          # outside the home
+    meta_dir = home / "tenants" / "_default" / "global" / "web_chat" / "sessions"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "x.json").write_text(f'{{"workdir":"{evil.as_posix()}"}}', encoding="utf-8")
+    RA.run_local_repairs(_ctx(home))
+    assert not evil.exists()            # never created outside the home
+
+
+# ── stale_lock ────────────────────────────────────────────────────────────────
+
+def test_removes_stale_lock_keeps_fresh(tmp_path):
+    home = tmp_path
+    (home / "global").mkdir(parents=True)
+    stale = home / "global" / "old.lock"
+    fresh = home / "global" / "new.lock"
+    stale.write_text("x"); fresh.write_text("y")
+    old_t = time.time() - 7200  # 2 h ago
+    os.utime(stale, (old_t, old_t))
+    RA.run_local_repairs(_ctx(home, now=time.time()))
+    assert not stale.exists()   # stale removed
+    assert fresh.exists()       # fresh kept
+
+
+# ── orphan_tmp ────────────────────────────────────────────────────────────────
+
+def test_removes_old_orphan_tmp(tmp_path):
+    home = tmp_path
+    (home / "d").mkdir()
+    tmp = home / "d" / "partial.tmp"
+    tmp.write_text("half")
+    old = time.time() - 200000  # > 24 h
+    os.utime(tmp, (old, old))
+    RA.run_local_repairs(_ctx(home, now=time.time()))
+    assert not tmp.exists()
+
+
+# ── secret_file_mode (POSIX) ──────────────────────────────────────────────────
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_tightens_loose_secret_file(tmp_path):
+    home = tmp_path
+    (home / "config").mkdir()
+    sec = home / "config" / "service.env"
+    sec.write_text("KEY=v")
+    sec.chmod(0o644)  # too open
+    RA.run_local_repairs(_ctx(home))
+    assert (sec.stat().st_mode & 0o777) == 0o600
+
+
+# ── loss-gated rollback ───────────────────────────────────────────────────────
+
+def test_rollback_when_fault_persists(tmp_path, monkeypatch):
+    # An action whose apply() does NOT clear the fault must be undone.
+    undone = {"v": False}
+
+    class _Stubborn(RA.RepairAction):
+        action_id = "stubborn_test"
+        def precondition(self, ctx): return ["fault"]          # ALWAYS present
+        def apply(self, ctx, faults): return 1                  # pretends to fix
+        def undo(self, ctx): undone["v"] = True
+
+    monkeypatch.setitem(RA._REGISTRY, "stubborn_test", _Stubborn())
+    out = {o.action_id: o for o in RA.run_local_repairs(_ctx(tmp_path))}
+    RA._REGISTRY.pop("stubborn_test", None)
+    assert out["stubborn_test"].status == "reverted"
+    assert undone["v"] is True
+
+
+# ── gating ────────────────────────────────────────────────────────────────────
+
+def test_kill_switch_disables_all(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORVIN_ACO_L5_OFF", "1")
+    (home := tmp_path / "global").mkdir(parents=True)
+    stale = home / "x.lock"; stale.write_text("x")
+    os.utime(stale, (time.time() - 7200,) * 2)
+    assert RA.run_local_repairs(_ctx(tmp_path, now=time.time())) == []
+    assert stale.exists()  # nothing touched
+
+
+def test_risky_actions_gated(tmp_path, monkeypatch):
+    ran = {"v": False}
+
+    class _Risky(RA.RepairAction):
+        action_id = "risky_test"; risk = RA.RISK_RISKY
+        def precondition(self, ctx): return ["f"] if not ran["v"] else []
+        def apply(self, ctx, faults): ran["v"] = True; return 1
+        def undo(self, ctx): pass
+
+    monkeypatch.setitem(RA._REGISTRY, "risky_test", _Risky())
+    try:
+        RA.run_local_repairs(_ctx(tmp_path))          # risky NOT enabled
+        assert ran["v"] is False
+        monkeypatch.setenv("CORVIN_ACO_L5_RISKY", "1")
+        RA.run_local_repairs(_ctx(tmp_path))          # now enabled
+        assert ran["v"] is True
+    finally:
+        RA._REGISTRY.pop("risky_test", None)
+
+
+def test_dry_run_is_read_only(tmp_path):
+    home = tmp_path
+    (home / "g").mkdir()
+    stale = home / "g" / "z.lock"; stale.write_text("x")
+    os.utime(stale, (time.time() - 7200,) * 2)
+    out = RA.run_local_repairs(_ctx(home, now=time.time()), dry_run=True)
+    assert any(o.status == "would_apply" for o in out)
+    assert stale.exists()  # dry-run changed nothing
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

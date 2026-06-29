@@ -124,6 +124,29 @@ async def _heal_cycle() -> None:
     except Exception:
         logger.debug("[ACO] Nervous-system scan failed", exc_info=True)
 
+    # ── Step L5: Actuating local self-repair (ADR-0178, Tier LOCAL) ──────
+    # Bounded to CORVIN_HOME (code-immutable), reversible, loss-gated, audited.
+    # Respects the CORVIN_ACO_L5_OFF kill switch internally. NEVER commits code
+    # or reaches main (that is L6, gated by a signed maintainer capability).
+    try:
+        from ..aco.repair_actions import run_local_repairs, RepairContext
+        from forge import paths as _paths
+        _home = _paths.corvin_home()
+        for tenant_id in tenants:
+            outcomes = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda t=tenant_id: run_local_repairs(
+                    RepairContext(corvin_home=_home, tenant_id=t)),
+            )
+            applied = [o for o in (outcomes or []) if o.status == "applied"]
+            if applied:
+                logger.info("[ACO] L5 self-repair: %d action(s) applied (tenant=%s)",
+                            len(applied), tenant_id)
+    except ImportError:
+        pass
+    except Exception:
+        logger.debug("[ACO] L5 actuating repair failed", exc_info=True)
+
     # ── Step 0: Security Integrity Scan ──────────────────────────────────
     try:
         from ..aco.integrity_monitor import run_integrity_scan
