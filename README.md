@@ -5,6 +5,8 @@
 </picture>
 
 <p align="center">
+  <a href="https://pypi.org/project/corvinos/"><img src="https://img.shields.io/pypi/v/corvinos?style=flat-square&label=PyPI&color=22c55e&labelColor=161b22" alt="PyPI"/></a>
+  <a href="https://pypi.org/project/corvinos/"><img src="https://img.shields.io/pypi/dm/corvinos?style=flat-square&label=installs%2Fmo&color=22c55e&labelColor=161b22" alt="PyPI Downloads"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-f0b429?style=flat-square&labelColor=161b22" alt="Apache 2.0"/></a>
   <a href="docs/eu-ai-act/README.md"><img src="https://img.shields.io/badge/EU%20AI%20Act%202026-Enforced-3b82f6?style=flat-square&labelColor=161b22" alt="EU AI Act 2026 Enforced"/></a>
   <a href="docs/audit-and-compliance.md"><img src="https://img.shields.io/badge/GDPR-Art.%206%2C7%2C17%2C30%2C32-3b82f6?style=flat-square&labelColor=161b22" alt="GDPR Compliant"/></a>
@@ -21,6 +23,22 @@
   <a href="docs/eu-ai-act/README.md">EU AI Act</a> ·
   <a href="docs/ulo-learning-objectives.md">Learning Objectives</a>
 </p>
+
+---
+
+**One install. Seven bridges. Any LLM.**
+
+CorvinOS is a self-hosted agentic OS that connects **Ollama, Claude, GPT-4, and any OpenRouter model** to **Discord, Telegram, WhatsApp, Slack, Email, Teams, and Signal** — through a single pip package.
+
+```
+pip install corvinos && python -m corvinOS
+```
+
+- **Local-first** — run 100 % offline with Ollama and `--engine hermes`. No API key needed.
+- **Agentic** — generates sandboxed tools and new skills at runtime; delegates subtasks across five AI engines.
+- **Compliance by architecture** — EU AI Act 2026 (disclosure, consent, house-rules) and GDPR (audit chain, data residency, erasure) are load-bearing code, not policy documents. None can be disabled by a flag.
+- **Multi-tenant** — one instance, multiple users, personas, and teams, all isolated.
+- **Self-hostable anywhere** — Linux, macOS, Windows; Docker-ready; single `pip install`.
 
 ---
 
@@ -157,9 +175,9 @@ Full compliance reference: [docs/eu-ai-act/README.md](docs/eu-ai-act/README.md) 
 
 ## Core Features
 
-### Five WorkerEngines — One Compliance Stack
+### Swap the LLM Without Touching the Compliance Stack
 
-The `WorkerEngine` protocol (L22) decouples the LLM backend from the compliance runtime. Every engine shares the path-gate (L10), audit chain (L16), and artifact registration (L33) via the Tool Execution Broker.
+CorvinOS decouples the AI backend from the compliance runtime via the `WorkerEngine` protocol (L22). Every engine shares path-gate, audit chain, and artifact registration through the Tool Execution Broker — swap providers without changing your compliance setup.
 
 | Engine | Provider | Key property |
 |---|---|---|
@@ -169,21 +187,21 @@ The `WorkerEngine` protocol (L22) decouples the LLM backend from the compliance 
 | **Hermes** | NousResearch via local Ollama | Zero network egress · L34 CONFIDENTIAL-capable · no API key |
 | **Copilot CLI** | GitHub Copilot Business/Enterprise | Zero incremental cost · worker/delegation only |
 
-### A2A Agent Mesh with Network Attestation (L38 + ADR-0103)
+### Multi-Agent Mesh — CorvinOS Instances Talk to Each Other
 
-CorvinOS instances form a decentralized agent mesh. Every cross-instance call carries HMAC-SHA256 signature, bidirectional instance attestation (Protocol v7), nonce replay protection, and binary attachment verification (≤16 attachments, ≤1 MiB). Audit-first invariant: `A2A.envelope_received` is written to the hash chain **before** any response is sent. Unknown origins receive unsigned rejections (no oracle for probing attacks).
+Multiple CorvinOS instances form a decentralized agent network. Every cross-instance call carries a cryptographic signature, bidirectional attestation, nonce replay protection, and binary attachment verification. Audit-first invariant: the envelope is written to the hash chain **before** any response is sent.
 
-### Security Depth: 39+ Layers
+### 39-Layer Security Stack
 
-Path-gate hook (L10) · secret vault with bwrap env-injection (L16) · layer integrity protocol with RS256-signed manifest (ADR-0141) · Forge runtime tools in bwrap sandbox (L6) · SkillForge with fail-closed linter (L7) · session lifecycle with audit-first reset (L8) · per-turn task event log with streamed tokens · multi-tenant isolation (ADR-0007) · conversation recall with PII-redaction (L28) · session artifact memory (L33) · DSI v1 external data sources (ADR-0106).
+Path-gate (write-protection) · secret vault with bwrap env-injection · sandboxed Forge tool generation · SkillForge with fail-closed linter · multi-tenant session isolation · conversation recall with PII-redaction · session artifact memory · external data sources with k-anonymised sampling.
 
-### Data Classification + Egress Control
+### Data Never Leaves Without Your Explicit Permission
 
-Three-layer defence: `ADR-0007 allowed_engines` → `L34 data_classification.matrix` → `L35 egress allowed_hosts`. EU_PRODUCTION presets ship under `operator/bundle/config-templates/`. The LLM sees only schema + aggregate stats + k-anonymised sample — raw rows never enter the context window (L24/L32).
+Three-layer defence: per-tenant engine allowlist → data classification matrix (PUBLIC / INTERNAL / CONFIDENTIAL / SECRET) → egress host allowlist. EU_PRODUCTION presets ship out of the box. Raw data rows never enter the LLM context — only schema + aggregate stats + anonymised sample.
 
-### Web Console + Multi-Tenant
+### Web Console — Manage Everything From the Browser
 
-Browser control plane at `http://localhost:8765`. Five-scope tenant model: `(task, session, project, user, tenant_id)`. All routes use session-bound `tenant_id` — no env-var fallback. Full REST API at `/v1/console/`.
+Control plane at `http://localhost:8765`. Manage sessions, personas, bridges, forge tools, and audit logs from a single dashboard. Five-scope tenant model: one instance handles multiple users, projects, and teams in full isolation. Full REST API at `/v1/console/`.
 
 ```bash
 bridge.sh console     # start web console
