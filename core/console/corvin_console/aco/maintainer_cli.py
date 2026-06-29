@@ -51,9 +51,18 @@ def cmd_keygen(args) -> int:
     pub_b64 = _b64(pub)
     if args.out_priv:
         p = Path(args.out_priv)
-        # write 0600 BEFORE content so it is never briefly world-readable
+        # 0o600 in os.open only applies when the file is CREATED; a pre-existing
+        # (possibly world-readable) file would keep its old mode under O_TRUNC.
+        # os.fchmod forces 0600 UNCONDITIONALLY before the secret is written
+        # (review 2026-06-29, HIGH).
         fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
+        try:
+            if os.name != "nt":
+                os.fchmod(fd, 0o600)
+        except BaseException:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "w") as fh:   # fdopen now owns + closes fd
             fh.write(_b64(priv) + "\n")
         print(f"private key → {p} (mode 0600, KEEP SECRET, never commit)")
     else:
@@ -146,8 +155,15 @@ def cmd_run(args) -> int:
         "requires_ack": r.requires_ack, "detail": r.detail,
         "gate_reasons": r.gate_reasons, "telemetry": r.telemetry,
     }, indent=2))
-    # exit 0 only on a fully-resolved outcome
-    return 0 if r.status in ("merged", "pushed", "pr_ready") else 1
+    # distinct exit codes so automation can tell the three states apart:
+    #   0 = terminally resolved (merged/pushed)
+    #   2 = a PR awaits human ack (NOT done — never auto-proceed on this)
+    #   1 = denied / gate-failed / error
+    if r.status in ("merged", "pushed"):
+        return 0
+    if r.status == "pr_ready":
+        return 2
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

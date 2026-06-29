@@ -7,6 +7,7 @@ a PR (requires_ack), never an auto-merge to main.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -107,6 +108,33 @@ def test_engine_generated_patch_is_never_auto_merged(tmp_path, monkeypatch):
     head = subprocess.run(["git", "-C", str(repo), "show", "main:app.py"],
                           capture_output=True, text=True).stdout
     assert head == "x = 1\n"
+
+
+def test_default_llm_runs_engine_tool_less():
+    # CRITICAL regression: the patch generator must spawn the engine with NO write
+    # tools (mode="restricted" → --disallowedTools "*"), so it can never write/
+    # commit/push as a side-effect before the gate. Source-introspection guard.
+    import inspect
+    src = inspect.getsource(PG.default_llm)
+    assert 'mode": "restricted"' in src or "mode='restricted'" in src or \
+           '"restricted"' in src, "patch generator engine must run tool-less"
+
+
+def test_parse_rejects_colon_in_first_segment():
+    assert PG.parse_patch(
+        '{"edits":[{"path":"weird:name/x.py","new_content":"x"}]}', {"id": "d"}) is None
+    assert PG.parse_patch(
+        '{"edits":[{"path":"C:/x.py","new_content":"x"}]}', {"id": "d"}) is None
+
+
+def test_engine_source_rejects_symlink_escape(tmp_path):
+    if os.name == "nt":
+        pytest.skip("symlink semantics differ on Windows")
+    repo = tmp_path / "repo"; repo.mkdir()
+    secret = tmp_path / "outside_secret"; secret.write_text("TOPSECRET")
+    (repo / "link").symlink_to(secret)         # in-repo name → out-of-repo target
+    src = PG.engine_patch_source(repo_dir=repo, llm=lambda p: pytest.fail("should not reach llm"))
+    assert src({"id": "d", "file": "link"}) is None   # refused before prompting
 
 
 if __name__ == "__main__":

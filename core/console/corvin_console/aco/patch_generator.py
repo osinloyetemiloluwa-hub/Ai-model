@@ -100,7 +100,10 @@ def parse_patch(text: str, diagnosis: dict, *, max_edits: int = _MAX_EDITS) -> O
         # repo-relative only — no absolute, no traversal (the loop also enforces
         # this, but the generator must not even propose an escape).
         norm = path.replace("\\", "/")
-        if norm.startswith("/") or ".." in norm.split("/") or ":" in norm.split("/")[0][1:2]:
+        seg0 = norm.split("/")[0]
+        # reject absolute, traversal, and ANY colon in the first segment
+        # (Windows drive `C:` and NTFS ADS `file:stream`) — not just index 1.
+        if norm.startswith("/") or ".." in norm.split("/") or ":" in seg0:
             return None
         if len(content.encode("utf-8")) > _MAX_FILE_BYTES:
             return None
@@ -128,12 +131,18 @@ def engine_patch_source(*, repo_dir: str | Path,
         if not targets:
             return None
         bodies: dict[str, str] = {}
+        repo_r = repo.resolve()
         for rel in targets:
             norm = rel.replace("\\", "/")
-            if norm.startswith("/") or ".." in norm.split("/"):
+            if norm.startswith("/") or ".." in norm.split("/") or ":" in norm.split("/")[0]:
                 return None
             fp = (repo / norm)
+            # Resolve + confirm containment so a symlink inside the repo can't
+            # leak an out-of-repo file's contents into the prompt (review LOW).
             try:
+                rp = fp.resolve()
+                if rp != repo_r and repo_r not in rp.parents:
+                    return None
                 if fp.is_file() and fp.stat().st_size <= _MAX_FILE_BYTES:
                     bodies[norm] = fp.read_text(encoding="utf-8")
                 else:
@@ -167,11 +176,16 @@ def default_llm(*, model: Optional[str] = None, timeout: float = 300.0,
 
     def _llm(prompt: str) -> str:
         engine = ClaudeCodeEngine()
-        kw: dict[str, Any] = {"timeout": timeout}
+        # SECURITY (review 2026-06-29, CRITICAL): the patch generator must be a
+        # PURE text→text completion — NEVER an agentic run with Write/Edit/Bash.
+        # mode="restricted" emits `--disallowedTools "*"`, so the engine cannot
+        # touch the filesystem or shell out (no out-of-gate writes, no `git push`)
+        # before parse_patch + l6_gate + the human ack ever run. The file content
+        # it needs is already embedded in the prompt (build_prompt), so it needs
+        # no Read tool. We also DON'T set working_dir → no implicit repo cwd.
+        kw: dict[str, Any] = {"timeout": timeout, "mode": "restricted"}
         if model:
             kw["model"] = model
-        if working_dir:
-            kw["working_dir"] = _P(working_dir)
         result = collect(engine.spawn(prompt, **kw))
         return result.final_text or ""
 

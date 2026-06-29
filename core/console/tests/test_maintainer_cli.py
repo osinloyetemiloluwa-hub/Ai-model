@@ -38,6 +38,15 @@ def test_keygen_writes_0600_priv_and_prints_pub(tmp_path, capsys):
     assert "CORVIN_MAINTAINER_PUBKEY=" in out
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_keygen_forces_0600_on_preexisting_loose_file(tmp_path):
+    # HIGH regression: a pre-existing world-readable target must end up 0600.
+    priv = tmp_path / "k.priv"
+    priv.write_text("old"); priv.chmod(0o644)
+    CLI.main(["keygen", "--out-priv", str(priv)])
+    assert (priv.stat().st_mode & 0o777) == 0o600
+
+
 def test_issue_then_verify_roundtrip(tmp_path, capsys, monkeypatch):
     priv = tmp_path / "k.priv"
     CLI.main(["keygen", "--out-priv", str(priv)])
