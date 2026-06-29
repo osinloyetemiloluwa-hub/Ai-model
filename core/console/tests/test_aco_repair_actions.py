@@ -169,5 +169,51 @@ def test_dry_run_is_read_only(tmp_path):
     assert stale.exists()  # dry-run changed nothing
 
 
+# ── M2 risky actions ──────────────────────────────────────────────────────────
+
+def test_corrupt_config_reset_risky(tmp_path, monkeypatch):
+    home = tmp_path
+    (home / "c").mkdir()
+    bad = home / "c" / "engine.config.json"
+    bad.write_text("{ this is not json ", encoding="utf-8")
+    good = home / "c" / "ok.config.json"
+    good.write_text('{"a":1}', encoding="utf-8")
+    # risky OFF → untouched
+    RA.run_local_repairs(_ctx(home))
+    assert bad.read_text().startswith("{ this")
+    # risky ON → backed up + reset; valid config untouched
+    monkeypatch.setenv("CORVIN_ACO_L5_RISKY", "1")
+    RA.run_local_repairs(_ctx(home))
+    assert bad.read_text() == "{}\n"
+    assert (home / "c" / "engine.config.json.corrupt").exists()
+    assert good.read_text() == '{"a":1}'
+
+
+def test_corrupt_config_reset_never_touches_forbidden(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORVIN_ACO_L5_RISKY", "1")
+    home = tmp_path
+    (home / "g").mkdir()
+    # audit.jsonl is not *.config.json and must never be a candidate
+    audit = home / "g" / "audit.jsonl"
+    audit.write_text("not-json-hash-chain", encoding="utf-8")
+    RA.run_local_repairs(_ctx(home))
+    assert audit.read_text() == "not-json-hash-chain"
+
+
+def test_stale_running_task_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORVIN_ACO_L5_RISKY", "1")
+    home = tmp_path
+    td = home / "tenants" / "_default" / "sessions" / "web_x" / "tasks"
+    td.mkdir(parents=True)
+    dead = td / "dead.json"
+    dead.write_text('{"status":"running","pid":2147483646}', encoding="utf-8")
+    live = td / "live.json"
+    live.write_text(f'{{"status":"running","pid":{os.getpid()}}}', encoding="utf-8")
+    RA.run_local_repairs(_ctx(home))
+    import json as _j
+    assert _j.loads(dead.read_text())["status"] == "failed"      # dead pid → failed
+    assert _j.loads(live.read_text())["status"] == "running"     # live pid → untouched
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

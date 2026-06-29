@@ -393,3 +393,125 @@ class SecretFileMode(RepairAction):
                 t.chmod(mode)
             except OSError:
                 pass
+
+
+# ── RISKY seed actions (M2, opt-in via CORVIN_ACO_L5_RISKY=1) ──────────────────
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness. Unknown → treat as ALIVE (conservative: never reset
+    a task we can't prove is dead)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else
+    except (OSError, AttributeError, OverflowError):
+        return True          # can't tell (e.g. Windows quirk) → assume alive
+
+
+@register_repair
+class CorruptConfigReset(RepairAction):
+    """A ``*.config.json`` file under the home that no longer parses → back it up to
+    ``<name>.corrupt`` and write an empty-object default, so a corrupted (e.g.
+    half-written) config stops wedging boot. Reversible from the backup. SCOPED to
+    the ``.config.json`` naming convention ONLY — never audit/policy/secret/session
+    files."""
+    action_id = "corrupt_config_reset"
+    risk = RISK_RISKY
+    blast_radius = "tenant"
+    _FORBIDDEN = ("audit.jsonl", "policy.json", "license.key", "identity_registry.json")
+
+    def _candidates(self, ctx: RepairContext) -> list[Path]:
+        return [p for p in ctx.corvin_home.rglob("*.config.json")
+                if p.is_file() and p.name not in self._FORBIDDEN]
+
+    def precondition(self, ctx: RepairContext) -> list[Any]:
+        faults = []
+        for p in self._candidates(ctx):
+            try:
+                json.loads(p.read_text(encoding="utf-8"))
+            except (OSError,):
+                continue
+            except json.JSONDecodeError:
+                faults.append(p)   # parses-as-file but not as JSON → corrupt
+        return faults
+
+    def apply(self, ctx: RepairContext, faults: list[Any]) -> int:
+        self._backups: list[tuple[Path, Path]] = []
+        n = 0
+        for p in faults:
+            t = _assert_within_home(ctx.corvin_home, p)
+            backup = _assert_within_home(ctx.corvin_home, t.with_suffix(".json.corrupt"))
+            try:
+                t.replace(backup)            # move the corrupt file aside (reversible)
+                t.write_text("{}\n", encoding="utf-8")
+                self._backups.append((t, backup))
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    def undo(self, ctx: RepairContext) -> None:
+        for t, backup in getattr(self, "_backups", []):
+            try:
+                if backup.exists():
+                    backup.replace(t)        # restore the original corrupt file
+            except OSError:
+                pass
+
+
+@register_repair
+class StaleRunningTaskReset(RepairAction):
+    """A task record (``tasks/*.json``) stuck in ``status="running"`` whose ``pid``
+    is dead → mark it ``failed`` so the queue stops treating a crashed task as live
+    (the stale-running-zombie class). Reversible (restores the prior status)."""
+    action_id = "stale_running_task_reset"
+    risk = RISK_RISKY
+    blast_radius = "tenant"
+
+    def _task_files(self, ctx: RepairContext) -> list[Path]:
+        return list(ctx.corvin_home.rglob("tasks/*.json"))
+
+    def precondition(self, ctx: RepairContext) -> list[Any]:
+        faults = []
+        for tf in self._task_files(ctx):
+            try:
+                rec = json.loads(tf.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(rec, dict) or rec.get("status") != "running":
+                continue
+            pid = rec.get("pid")
+            if isinstance(pid, int) and not _pid_alive(pid):
+                faults.append(tf)
+        return faults
+
+    def apply(self, ctx: RepairContext, faults: list[Any]) -> int:
+        self._prev: list[tuple[Path, str]] = []
+        n = 0
+        for tf in faults:
+            t = _assert_within_home(ctx.corvin_home, tf)
+            try:
+                rec = json.loads(t.read_text(encoding="utf-8"))
+                self._prev.append((t, rec.get("status", "running")))
+                rec["status"] = "failed"
+                rec["failed_reason"] = "stale_running_pid_dead (ACO L5)"
+                t.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+                n += 1
+            except (OSError, json.JSONDecodeError):
+                pass
+        return n
+
+    def undo(self, ctx: RepairContext) -> None:
+        for t, prev_status in getattr(self, "_prev", []):
+            try:
+                rec = json.loads(t.read_text(encoding="utf-8"))
+                rec["status"] = prev_status
+                rec.pop("failed_reason", None)
+                t.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+            except (OSError, json.JSONDecodeError):
+                pass
