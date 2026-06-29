@@ -18,12 +18,12 @@
 
 **Linux / macOS — one-liner (recommended):**
 ```bash
-curl -fsSL https://corvin-labs.net/install.sh | bash
+curl -fsSL https://corvin-labs.com/install.sh | bash
 ```
 
 **Windows — PowerShell one-liner:**
 ```powershell
-irm https://corvin-labs.net/install.ps1 | iex
+irm https://corvin-labs.com/install.ps1 | iex
 ```
 
 Both one-liners create a virtualenv at `~/.corvinos`, pip-install CorvinOS into it, and add it to
@@ -213,7 +213,7 @@ corvinos-serve
 > ```powershell
 > py -m ops.launcher.corvin.serve_entry --no-browser
 > ```
-> The one-liner installer (`irm https://corvin-labs.net/install.ps1 | iex`) handles PATH
+> The one-liner installer (`irm https://corvin-labs.com/install.ps1 | iex`) handles PATH
 > setup automatically.
 
 **Hermes (local AI, no API key required):**

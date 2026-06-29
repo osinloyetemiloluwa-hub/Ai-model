@@ -506,7 +506,7 @@ Sprich. Dein System handelt.
 
 CorvinOS ist kein Chatbot — es ist dein persönliches KI-Betriebssystem. Es verbindet deine Agenten, Tools, Kanäle und Daten zu einem System, das für dich handelt — auf jedem Kanal, in deiner Sprache.
 
-🌐 *corvin-labs.net* — alle Infos, Demo & Preise
+🌐 *corvin-labs.com* — alle Infos, Demo & Preise
 
 *Was CorvinOS für dich erledigt:*
 • *Ein System, alle Kanäle:* WhatsApp, Discord, Telegram, Slack, Mail — ein Assistent, ein gemeinsames Gedächtnis, überall.
@@ -518,7 +518,7 @@ CorvinOS ist kein Chatbot — es ist dein persönliches KI-Betriebssystem. Es ve
 • *Deine Daten, dein Schutz:* nach EU AI Act und DSGVO gebaut — lückenloses Audit, kein Kleingedrucktes.
 
 *Loslegen:* /help für alle Befehle · einfach schreiben oder sprechen → CorvinOS handelt
-*Mehr erfahren:* https://corvin-labs.net`;
+*Mehr erfahren:* https://corvin-labs.com`;
 
 const WELCOME_TEXT_EN = `🦅 *CorvinOS — Voice to Action*
 
@@ -526,7 +526,7 @@ Speak. Your system acts.
 
 CorvinOS isn't a chatbot — it's your personal AI operating system. It connects your agents, tools, channels and data into one system that gets things done for you — on every channel, in your language.
 
-🌐 *corvin-labs.net* — info, demo & pricing
+🌐 *corvin-labs.com* — info, demo & pricing
 
 *What CorvinOS does for you:*
 • *One system, every channel:* WhatsApp, Discord, Telegram, Slack, email — one assistant, one shared memory, everywhere.
@@ -538,7 +538,7 @@ CorvinOS isn't a chatbot — it's your personal AI operating system. It connects
 • *Your data, your protection:* built to EU AI Act and GDPR — full audit trail, no fine print.
 
 *Get started:* /help for all commands · just type or speak → CorvinOS acts
-*Learn more:* https://corvin-labs.net`;
+*Learn more:* https://corvin-labs.com`;
 
 function welcomeReply(ctx) {
   // Channel-aware light-touch tweak: WhatsApp formatting uses *bold*, Telegram /

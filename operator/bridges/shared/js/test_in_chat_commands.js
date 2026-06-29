@@ -91,7 +91,7 @@ console.log('\n=== dispatch: /welcome ===');
   eq(w && w.kind, 'welcome', '/welcome kind=welcome');
   eq(w && w.tts, true, '/welcome carries tts=true (signals daemon to attach voice-note)');
   contains(w && w.reply, 'Corvin', '/welcome reply mentions Corvin');
-  contains(w && w.reply, 'corvin-labs.net', '/welcome reply contains the product URL');
+  contains(w && w.reply, 'corvin-labs.com', '/welcome reply contains the product URL');
   contains(w && w.reply, '/help', '/welcome reply mentions /help');
 
   // Aliases route to the same handler.

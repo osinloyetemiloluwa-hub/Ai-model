@@ -7,12 +7,12 @@ Thin CLI launcher for [CorvinOS](https://github.com/CorvinLabs/CorvinOS) — ena
 
 **Linux / macOS — one-liner:**
 ```bash
-curl -fsSL https://corvin-labs.net/install.sh | bash
+curl -fsSL https://corvin-labs.com/install.sh | bash
 ```
 
 **Windows — PowerShell:**
 ```powershell
-irm https://corvin-labs.net/install.ps1 | iex
+irm https://corvin-labs.com/install.ps1 | iex
 ```
 
 **All platforms — pip:**

@@ -5,7 +5,7 @@ param(
 )
 # install.ps1 — CorvinOS installer for Windows (PowerShell).
 # Usage:
-#   irm https://corvin-labs.net/install.ps1 | iex
+#   irm https://corvin-labs.com/install.ps1 | iex
 #   .\install.ps1 -Editable C:\path\to\CorvinOS   # dev install from local clone
 #   .\install.ps1 -e C:\path\to\CorvinOS
 

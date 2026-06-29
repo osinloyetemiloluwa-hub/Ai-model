@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — CorvinOS installer for Linux and macOS.
 # Usage:
-#   curl -fsSL https://corvin-labs.net/install.sh | bash
+#   curl -fsSL https://corvin-labs.com/install.sh | bash
 #   bash install.sh --editable /path/to/CorvinOS   # dev install from local clone
 set -euo pipefail
 

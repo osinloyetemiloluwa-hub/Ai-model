@@ -25,9 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://corvin-labs.net"
+Homepage = "https://corvin-labs.com"
 Repository = "https://github.com/veegee82/CorvinOS"
-Documentation = "https://corvin-labs.net/docs"
+Documentation = "https://corvin-labs.com/docs"
 "Bug Tracker" = "https://github.com/veegee82/CorvinOS/issues"
 
 [project.scripts]
