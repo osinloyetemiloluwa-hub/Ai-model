@@ -159,6 +159,8 @@ corvin-instance-id = "ops.launcher.instance_id_entry:main"
 corvin-id = "ops.launcher.corvin_id_entry:main"
 # ADR-0154 M6: OTA license diagnostics (operator-only MSLI shard check).
 corvin-license-debug = "ops.launcher.license_debug_entry:main"
+# ADR-0178: Tier-CONTRIBUTOR maintainer CLI (keygen/issue/verify/run the L6 loop).
+corvin-maintainer = "ops.launcher.maintainer_entry:main"
 
 [tool.hatch.build.targets.sdist.force-include]
 # Ship the PRE-BUILT SPA in the sdist so a wheel built FROM the sdist (the
