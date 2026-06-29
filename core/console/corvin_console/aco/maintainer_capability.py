@@ -76,9 +76,13 @@ def _pinned_public_key() -> bytes | None:
     env = os.environ.get("CORVIN_MAINTAINER_PUBKEY", "").strip()
     if env:
         try:
-            return base64.b64decode(env)
+            raw = base64.b64decode(env, validate=True)
         except Exception:  # noqa: BLE001
             return None
+        # An Ed25519 public key is exactly 32 bytes; reject anything else (a
+        # truncated/mangled copy-paste — common when the trailing '=' padding is
+        # lost) so verify() can report bad_pubkey instead of a confusing deny.
+        return raw if len(raw) == 32 else None
     return None
 
 
@@ -93,6 +97,10 @@ def verify(token: str | None, *, instance_id: str,
         return CapabilityVerdict(False, "no_token")
     pub = public_key_bytes if public_key_bytes is not None else _pinned_public_key()
     if not pub:
+        # Distinguish "set but invalid" (e.g. a copy-paste that dropped the base64
+        # '=' padding, or a non-32-byte key) from "absent" — far less confusing.
+        if public_key_bytes is None and os.environ.get("CORVIN_MAINTAINER_PUBKEY", "").strip():
+            return CapabilityVerdict(False, "bad_pubkey")
         return CapabilityVerdict(False, "no_pubkey")
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
