@@ -115,10 +115,15 @@ def l6_gate(patch: Patch, *, gate_runner: Optional[Callable[[], tuple[bool, str]
     reasons: list[str] = []
     requires_ack = False
 
-    # 1) hard-blocked paths → fail outright (never auto-touch these).
+    # 1) hard-blocked paths → fail outright (never auto-touch these). Matched
+    # CASE-INSENSITIVELY: macOS/Windows filesystems are case-insensitive, so
+    # `policy.JSON` / `secret.KEY` / `Notice` resolve to the real protected file
+    # and MUST be blocked too (security review 2026-06-29).
+    _hard = {h.casefold() for h in _HARD_BLOCK}
+    _hsuf = tuple(s.casefold() for s in _HARD_BLOCK_SUFFIX)
     for p in patch.paths:
-        base = p.replace("\\", "/").split("/")[-1]
-        if base in _HARD_BLOCK or base.endswith(_HARD_BLOCK_SUFFIX):
+        base = p.replace("\\", "/").split("/")[-1].casefold()
+        if base in _hard or base.endswith(_hsuf):
             reasons.append(f"hard-blocked path: {p}")
             return GateResult(False, requires_ack=False, reasons=reasons)
 
@@ -200,17 +205,40 @@ def run_maintenance_loop(
 
     # 4) write edits + branch + commit (scoped to repo, never -A).
     branch = f"aco/l6/{diag_id}"
+
+    # 4a) Refuse to operate on a dirty worktree — otherwise a stray uncommitted
+    # change could be swept into the commit or block the branch switch and leave
+    # the commit on the current branch (possibly main). (security review MED.)
+    rc, porcelain = _git(repo, "status", "--porcelain")
+    if rc != 0 or porcelain.strip():
+        return LoopResult("gate_blocked", "worktree not clean — refusing to operate",
+                         gate_reasons=gate.reasons, telemetry=tele)
+
+    # 4b) Validate ALL edit paths BEFORE writing any (no partial writes on a later
+    # path-escape), and resolve them once. (security review MED.)
+    try:
+        targets = [(_within_repo(repo, e.path), e) for e in patch.edits]
+    except Exception as exc:  # noqa: BLE001
+        return LoopResult("gate_blocked", f"patch path refused: {exc}",
+                         gate_reasons=gate.reasons, telemetry=tele)
+
+    # 4c) Create + SWITCH to the branch, then ASSERT HEAD actually moved there —
+    # never commit on a branch we didn't intend (e.g. main). (security review MED.)
     rc, _ = _git(repo, "checkout", "-b", branch)
     if rc != 0:
-        # branch may exist; try switching
-        _git(repo, "checkout", branch)
+        _git(repo, "checkout", branch)  # branch may already exist
+    rc, cur = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0 or cur.strip() != branch:
+        return LoopResult("gate_blocked",
+                         f"could not switch to {branch} (HEAD={cur.strip()!r}) — aborting",
+                         gate_reasons=gate.reasons, telemetry=tele)
     try:
-        for e in patch.edits:
-            t = _within_repo(repo, e.path)
+        for t, e in targets:
             t.parent.mkdir(parents=True, exist_ok=True)
             t.write_text(e.new_content, encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        return LoopResult("gate_blocked", f"patch write refused: {exc}",
+        _git(repo, "checkout", "--", ".")  # roll back any partial writes
+        return LoopResult("gate_blocked", f"patch write failed: {exc}",
                          branch=branch, gate_reasons=gate.reasons, telemetry=tele)
     _git(repo, "add", "--", *patch.paths)
     msg = (f"fix(aco-l6): {patch.summary}\n\n"

@@ -175,20 +175,26 @@ def run_local_repairs(ctx: RepairContext, *, dry_run: bool = False) -> list[Repa
         _audit(ctx, "repair.attempt", action_id=action.action_id, risk=action.risk,
                count=len(faults))
         try:
+            n_before = len(faults)
             fixed = action.apply(ctx, faults)
-            # Loss gate: re-detect. If the fault persists, the action did not help.
+            # Loss gate (PROGRESS-based, not all-or-nothing): re-detect and revert
+            # ONLY if the action made NO progress (fault count did not drop). A
+            # partial fix — or an unrelated new fault appearing during the cycle —
+            # must NOT roll back the repairs that succeeded (security/correctness
+            # review 2026-06-29: all-or-nothing reverted good work → net-zero loop).
             remaining = action.precondition(ctx)
-            if remaining:
+            if len(remaining) >= n_before:
                 action.undo(ctx)
                 _audit(ctx, "repair.reverted", action_id=action.action_id,
-                       reason="no_improvement", status="reverted")
+                       reason="no_progress", status="reverted")
                 out.append(RepairOutcome(action.action_id, "reverted",
-                                         "fault persisted → rolled back"))
+                                         "no progress → rolled back"))
             else:
                 _audit(ctx, "repair.applied", action_id=action.action_id,
                        status="applied", fixed=fixed)
                 out.append(RepairOutcome(action.action_id, "applied",
-                                         f"cleared {fixed} fault(s)", fixed=fixed))
+                                         f"cleared {n_before - len(remaining)} fault(s)",
+                                         fixed=fixed))
         except RepairScopeError as exc:
             _audit(ctx, "repair.blocked", action_id=action.action_id, reason=str(exc),
                    status="failed")
@@ -273,31 +279,56 @@ class StaleLockSweep(RepairAction):
     action_id = "stale_lock"
     risk = RISK_SAFE
     blast_radius = "home"
-    _TTL_S = 3600  # 1 h — well beyond any legitimate lock hold
+    _TTL_S = 6 * 3600  # 6 h — beyond legitimate holds incl. long L24/L25 compute
 
     def precondition(self, ctx: RepairContext) -> list[Any]:
         faults = []
         now = ctx.time()
         for lk in ctx.corvin_home.rglob("*.lock"):
             try:
-                if not lk.is_file():
+                # Skip symlinks: stat() would follow the link to its target
+                # (possibly outside the home) and mis-age it. Only real files here.
+                if lk.is_symlink() or not lk.is_file():
                     continue
-                if now - lk.stat().st_mtime > self._TTL_S:
-                    faults.append(lk)
+                if now - lk.stat().st_mtime <= self._TTL_S:
+                    continue
+                # Age alone is not enough: if the lock names a LIVE owner pid, the
+                # holder is still running (e.g. a long compute job) — never sweep it.
+                pid = self._owner_pid(lk)
+                if pid and _pid_alive(pid):
+                    continue
+                faults.append(lk)
             except OSError:
                 continue
         return faults
+
+    @staticmethod
+    def _owner_pid(lk: Path) -> int:
+        try:
+            txt = lk.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            return 0
+        # accept a bare pid or a "pid: N" / JSON-ish "pid":N form
+        import re as _re
+        m = _re.search(r"\b(\d{1,7})\b", txt)
+        return int(m.group(1)) if m else 0
 
     def apply(self, ctx: RepairContext, faults: list[Any]) -> int:
         self._removed: list[tuple[Path, bytes]] = []
         n = 0
         for lk in faults:
-            t = _assert_within_home(ctx.corvin_home, lk)
+            try:
+                t = _assert_within_home(ctx.corvin_home, lk)  # per-file: skip, don't abort
+            except RepairScopeError:
+                continue
             try:
                 data = t.read_bytes()
             except OSError:
                 data = b""
-            t.unlink()
+            try:
+                t.unlink()
+            except OSError:
+                continue
             self._removed.append((t, data))
             n += 1
         return n
@@ -325,7 +356,9 @@ class OrphanTmpSweep(RepairAction):
         now = ctx.time()
         for tmp in ctx.corvin_home.rglob("*.tmp"):
             try:
-                if tmp.is_file() and now - tmp.stat().st_mtime > self._TTL_S:
+                if tmp.is_symlink() or not tmp.is_file():
+                    continue
+                if now - tmp.stat().st_mtime > self._TTL_S:
                     faults.append(tmp)
             except OSError:
                 continue
@@ -334,7 +367,10 @@ class OrphanTmpSweep(RepairAction):
     def apply(self, ctx: RepairContext, faults: list[Any]) -> int:
         n = 0
         for tmp in faults:
-            t = _assert_within_home(ctx.corvin_home, tmp)
+            try:
+                t = _assert_within_home(ctx.corvin_home, tmp)  # per-file: skip, don't abort
+            except RepairScopeError:
+                continue
             try:
                 t.unlink()
                 n += 1
@@ -361,7 +397,8 @@ class SecretFileMode(RepairAction):
         out = []
         for name in self._NAMES:
             out.extend(ctx.corvin_home.rglob(name))
-        return [p for p in out if p.is_file()]
+        # Real files only — never chmod a symlink (would affect its target).
+        return [p for p in out if p.is_file() and not p.is_symlink()]
 
     def precondition(self, ctx: RepairContext) -> list[Any]:
         faults = []

@@ -76,7 +76,7 @@ def test_removes_stale_lock_keeps_fresh(tmp_path):
     stale = home / "global" / "old.lock"
     fresh = home / "global" / "new.lock"
     stale.write_text("x"); fresh.write_text("y")
-    old_t = time.time() - 7200  # 2 h ago
+    old_t = time.time() - 25200  # 7 h ago (> 6h TTL)
     os.utime(stale, (old_t, old_t))
     RA.run_local_repairs(_ctx(home, now=time.time()))
     assert not stale.exists()   # stale removed
@@ -134,7 +134,7 @@ def test_kill_switch_disables_all(tmp_path, monkeypatch):
     monkeypatch.setenv("CORVIN_ACO_L5_OFF", "1")
     (home := tmp_path / "global").mkdir(parents=True)
     stale = home / "x.lock"; stale.write_text("x")
-    os.utime(stale, (time.time() - 7200,) * 2)
+    os.utime(stale, (time.time() - 25200,) * 2)
     assert RA.run_local_repairs(_ctx(tmp_path, now=time.time())) == []
     assert stale.exists()  # nothing touched
 
@@ -163,10 +163,41 @@ def test_dry_run_is_read_only(tmp_path):
     home = tmp_path
     (home / "g").mkdir()
     stale = home / "g" / "z.lock"; stale.write_text("x")
-    os.utime(stale, (time.time() - 7200,) * 2)
+    os.utime(stale, (time.time() - 25200,) * 2)
     out = RA.run_local_repairs(_ctx(home, now=time.time()), dry_run=True)
     assert any(o.status == "would_apply" for o in out)
     assert stale.exists()  # dry-run changed nothing
+
+
+def test_partial_fix_is_kept_not_reverted(tmp_path, monkeypatch):
+    # Progress-based loss gate: an action that clears SOME faults must keep them,
+    # not roll back everything because one fault remains (review HIGH fix).
+    state = {"faults": ["a", "b"], "undone": False}
+
+    class _Partial(RA.RepairAction):
+        action_id = "partial_test"
+        def precondition(self, ctx): return list(state["faults"])
+        def apply(self, ctx, faults):
+            state["faults"] = ["b"]      # cleared 'a', 'b' remains
+            return 1
+        def undo(self, ctx): state["undone"] = True
+
+    monkeypatch.setitem(RA._REGISTRY, "partial_test", _Partial())
+    out = {o.action_id: o for o in RA.run_local_repairs(_ctx(tmp_path))}
+    RA._REGISTRY.pop("partial_test", None)
+    assert out["partial_test"].status == "applied"   # progress made → kept
+    assert state["undone"] is False
+    assert state["faults"] == ["b"]                  # the partial fix stuck
+
+
+def test_live_owner_lock_not_swept(tmp_path):
+    home = tmp_path
+    (home / "g").mkdir()
+    lk = home / "g" / "live.lock"
+    lk.write_text(str(os.getpid()), encoding="utf-8")   # owned by THIS live process
+    os.utime(lk, (time.time() - 99999,) * 2)            # old, but owner alive
+    RA.run_local_repairs(_ctx(home, now=time.time()))
+    assert lk.exists()                                   # live owner → never swept
 
 
 # ── M2 risky actions ──────────────────────────────────────────────────────────
