@@ -117,10 +117,25 @@ def cmd_run(args) -> int:
         diag = json.loads(Path(args.diagnosis).read_text(encoding="utf-8"))
     test_cmd = (args.test_cmd.split() if args.test_cmd
                 else [sys.executable, "-m", "pytest", "core/console/tests", "-q"])
+    if args.auto:
+        # Fully-automatic: the engine generates the patch from the diagnosis.
+        # Engine-generated patches are ALWAYS ack-gated (never auto-merged) — so
+        # --direct-main has no effect here by design.
+        from .patch_generator import engine_patch_source, default_llm
+        llm = default_llm(model=args.model, working_dir=args.repo)
+        if llm is None:
+            print(json.dumps({"status": "no_patch",
+                              "detail": "no engine available for --auto"}, indent=2))
+            return 1
+        patch_source = engine_patch_source(repo_dir=args.repo, llm=llm)
+    elif args.patch:
+        patch_source = _file_patch_source(args.patch)
+    else:
+        raise SystemExit("error: provide --patch FILE or --auto")
     r = ML.run_maintenance_loop(
         diagnosis=diag,
         repo_dir=args.repo,
-        patch_source=_file_patch_source(args.patch),
+        patch_source=patch_source,
         capability_token=None,                      # from CORVIN_MAINTAINER_CAP env
         gate_runner=_pytest_gate(test_cmd, args.repo),
         enable_direct_main=bool(args.direct_main),
@@ -156,8 +171,11 @@ def main(argv: list[str] | None = None) -> int:
 
     r = sub.add_parser("run", help="drive one L6 maintenance-loop iteration")
     r.add_argument("--repo", required=True, help="repo working dir to operate on")
-    r.add_argument("--patch", required=True, help="patch spec JSON (edits)")
-    r.add_argument("--diagnosis", help="diagnosis JSON (optional)")
+    r.add_argument("--patch", help="patch spec JSON (edits) — file-based source")
+    r.add_argument("--auto", action="store_true",
+                   help="engine generates the patch from the diagnosis (always ack-gated)")
+    r.add_argument("--model", help="engine model for --auto")
+    r.add_argument("--diagnosis", help="diagnosis JSON (required for --auto)")
     r.add_argument("--test-cmd", help="override the gate test command")
     r.add_argument("--direct-main", action="store_true",
                    help="allow ff-merge to main for low-risk+green (default: PR only)")
