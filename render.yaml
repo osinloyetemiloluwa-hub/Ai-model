@@ -1,0 +1,11 @@
+# render.yaml
+services:
+  - type: web
+    name: corvinos
+    runtime: python
+    plan: free                 # or "starter", "professional", etc.
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m corvinOS --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 10000           # internal port; Render will map it
